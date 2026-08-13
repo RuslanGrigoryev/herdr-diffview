@@ -73,8 +73,16 @@ class FileTreePane(Tree):
     directory nodes carry None so highlight handling can tell them apart.
     """
 
-    def __init__(self) -> None:
-        super().__init__("(root)", data=None)
+    def __init__(
+        self,
+        name: str | None = None,
+        id: str | None = None,
+        classes: str | None = None,
+        disabled: bool = False,
+    ) -> None:
+        super().__init__(
+            "(root)", data=None, name=name, id=id, classes=classes, disabled=disabled
+        )
         self.show_root = False
         self.guide_depth = 2
 
