@@ -109,7 +109,7 @@ class HerdrDiffApp(App):
         self._cumulative = False
         self._wrap = False
         self._follow = True
-        self._programmatic_select = False
+        self._suppress_highlighted = 0
         self._watcher: Optional[DirWatcher] = None
         self._subscriber: Optional[AgentStatusSubscriber] = None
         self._ended = False
@@ -166,6 +166,13 @@ class HerdrDiffApp(App):
 
     def _render_file_list(self, changed_paths: Optional[set[Path]] = None) -> None:
         file_list = self.query_one("#files", FilePane)
+        had_index = file_list.index is not None
+        # clear() sets .index = None itself when there was a previous
+        # selection, which posts its own Highlighted message asynchronously —
+        # account for it so it isn't mistaken for a user click and doesn't
+        # cancel follow mode. (No previous index -> no message to suppress.)
+        if had_index:
+            self._suppress_highlighted += 1
         file_list.clear()
         assert self._snapshot is not None
         if not self._snapshot.files:
@@ -195,7 +202,7 @@ class HerdrDiffApp(App):
 
         if self._selected_index >= len(self._snapshot.files):
             self._selected_index = max(0, len(self._snapshot.files) - 1)
-        self._programmatic_select = True
+        self._suppress_highlighted += 1
         file_list.index = self._selected_index
 
     def _match_changed_file(self, changed_paths: set[Path]) -> Optional[int]:
@@ -244,10 +251,10 @@ class HerdrDiffApp(App):
         if index is None:
             return
         self._selected_index = index
-        if self._programmatic_select:
-            # This selection came from follow-mode auto-jumping, not the user
-            # browsing manually — leave follow mode engaged.
-            self._programmatic_select = False
+        if self._suppress_highlighted > 0:
+            # This selection came from our own reload (clear() + index=)
+            # rather than the user browsing — leave follow mode engaged.
+            self._suppress_highlighted = max(0, self._suppress_highlighted - 1)
         elif self._follow:
             # A real user click/keypress while following: hand control back
             # to the user until they re-enable follow with 'f'.
@@ -321,7 +328,7 @@ class HerdrDiffApp(App):
             # rather than waiting for the next fs event.
             index = self._newest_file_index()
             if index is not None:
-                self._programmatic_select = True
+                self._suppress_highlighted += 1
                 self.query_one("#files", FilePane).index = index
 
     @staticmethod
