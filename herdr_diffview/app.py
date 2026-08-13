@@ -237,6 +237,7 @@ class HerdrDiffApp(App):
         self._cumulative = False
         self._base_branch_diff = False
         self._base_branch: Optional[str] = None
+        self._branch_files: list[git_watch.FileChange] = []
         self._follow = True
         # The index we ourselves last set programmatically (follow-mode
         # auto-jump, reload re-sync, 'f' re-enable). A Highlighted/
@@ -299,6 +300,8 @@ class HerdrDiffApp(App):
             self._end_watching("Watched directory is gone or no longer a git repo.")
             return
         self._snapshot = snap
+        if self._base_branch_diff and self._base_branch:
+            self._branch_files = git_watch.branch_file_list(snap.root, self._base_branch)
         header = self.query_one("#header", HeaderBar)
         header.repo_label = snap.root.name
         header.branch_label = snap.branch
@@ -308,19 +311,24 @@ class HerdrDiffApp(App):
         self._render_file_list(changed_paths)
         self._render_diff()
 
+    def _active_files(self) -> list[git_watch.FileChange]:
+        if self._base_branch_diff:
+            return self._branch_files
+        return self._snapshot.files if self._snapshot else []
+
     def _render_file_list(self, changed_paths: Optional[set[Path]] = None) -> None:
         file_list = self.query_one("#files", FilePane)
         tree = self.query_one("#file-tree", FileTreePane)
-        assert self._snapshot is not None
+        files = self._active_files()
 
         file_list.clear()
 
-        if not self._snapshot.files:
+        if not files:
             file_list.append(ListItem(Static("(clean)", classes="dim")))
             tree.rebuild([])
             return
 
-        for f in self._snapshot.files:
+        for f in files:
             style = {
                 "M": "yellow",
                 "A": "green",
@@ -330,9 +338,12 @@ class HerdrDiffApp(App):
             }.get(f.status, "white")
             label = Text(f"{f.marker} {f.path}", style=style)
             file_list.append(ListItem(Static(label)))
-        tree.rebuild(self._snapshot.files)
+        tree.rebuild(files)
 
-        if self._follow and changed_paths:
+        # Follow-mode auto-jump only makes sense against the live working
+        # tree (that's what fs events describe); base-branch mode keeps
+        # whatever selection it already had instead of trying to match.
+        if self._follow and changed_paths and not self._base_branch_diff:
             match = self._match_changed_file(changed_paths)
             if match is None:
                 # Some editors bounce writes through swap/hidden files that
@@ -343,8 +354,8 @@ class HerdrDiffApp(App):
             if match is not None:
                 self._selected_index = match
 
-        if self._selected_index >= len(self._snapshot.files):
-            self._selected_index = max(0, len(self._snapshot.files) - 1)
+        if self._selected_index >= len(files):
+            self._selected_index = max(0, len(files) - 1)
         self._expected_index = self._selected_index
         file_list.index = self._selected_index
         tree.select_index(self._selected_index)
@@ -365,25 +376,34 @@ class HerdrDiffApp(App):
                 continue
         if not rel_changed:
             return None
-        for i, f in enumerate(self._snapshot.files):
+        for i, f in enumerate(self._active_files()):
             if f.path in rel_changed:
                 return i
         return None
 
     def _render_diff(self) -> None:
         diff_pane = self.query_one("#diff", DiffPane)
-        header = self.query_one("#header", HeaderBar)
         if self._snapshot is None:
             return
         theme = DARK_THEMES[self._theme_index]
+        files = self._active_files()
         if self._base_branch_diff and self._base_branch:
-            text = git_watch.branch_diff(self._snapshot.root, self._base_branch)
-            diff_pane.show_diff(text, hint_filename=None, theme=theme)
+            if self._cumulative:
+                text = git_watch.branch_diff(self._snapshot.root, self._base_branch)
+                diff_pane.show_diff(text, hint_filename=None, theme=theme)
+            elif files:
+                f = files[self._selected_index]
+                text = git_watch.branch_diff_for_file(
+                    self._snapshot.root, self._base_branch, f
+                )
+                diff_pane.show_diff(text, hint_filename=f.path, theme=theme)
+            else:
+                diff_pane.show_diff("", hint_filename=None, theme=theme)
         elif self._cumulative:
             text = git_watch.cumulative_diff(self._snapshot.root)
             diff_pane.show_diff(text, hint_filename=None, theme=theme)
-        elif self._snapshot.files:
-            f = self._snapshot.files[self._selected_index]
+        elif files:
+            f = files[self._selected_index]
             text = git_watch.diff_for_file(self._snapshot.root, f)
             diff_pane.show_diff(text, hint_filename=f.path, theme=theme)
         else:
@@ -392,7 +412,7 @@ class HerdrDiffApp(App):
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         """Fires for both keyboard nav, mouse clicks, and our own programmatic
         follow-mode selection in the file list."""
-        if event.list_view.id != "files" or not self._snapshot or not self._snapshot.files:
+        if event.list_view.id != "files" or not self._active_files():
             return
         index = event.list_view.index
         if index is None:
@@ -406,7 +426,7 @@ class HerdrDiffApp(App):
         if event.node.tree.id != "file-tree":
             return
         index = event.node.data
-        if index is None or not self._snapshot or not self._snapshot.files:
+        if index is None or not self._active_files():
             return
         self._select_from_view(index)
 
@@ -467,9 +487,10 @@ class HerdrDiffApp(App):
         if self._view_mode == "tree":
             self.query_one("#file-tree", FileTreePane).action_cursor_down()
             return
-        if not self._snapshot or not self._snapshot.files:
+        files = self._active_files()
+        if not files:
             return
-        new_index = min(self._selected_index + 1, len(self._snapshot.files) - 1)
+        new_index = min(self._selected_index + 1, len(files) - 1)
         # Setting .index fires ListView.Highlighted, which re-renders the diff.
         self.query_one("#files", FilePane).index = new_index
 
@@ -477,7 +498,7 @@ class HerdrDiffApp(App):
         if self._view_mode == "tree":
             self.query_one("#file-tree", FileTreePane).action_cursor_up()
             return
-        if not self._snapshot or not self._snapshot.files:
+        if not self._active_files():
             return
         new_index = max(self._selected_index - 1, 0)
         self.query_one("#files", FilePane).index = new_index
@@ -489,8 +510,9 @@ class HerdrDiffApp(App):
     def action_toggle_base_branch_diff(self) -> None:
         if self._base_branch_diff:
             self._base_branch_diff = False
+            self._branch_files = []
             self._update_diff_mode_label()
-            self._render_diff()
+            self._resync_selection_and_render()
             return
         if not self._snapshot:
             return
@@ -503,7 +525,18 @@ class HerdrDiffApp(App):
             return
         self._base_branch = base
         self._base_branch_diff = True
+        self._branch_files = git_watch.branch_file_list(self._snapshot.root, base)
         self._update_diff_mode_label()
+        self._resync_selection_and_render()
+
+    def _resync_selection_and_render(self) -> None:
+        """Switching between working-tree and branch file lists changes what
+        _active_files() returns entirely, so re-clamp the selection and
+        rebuild both file views before re-rendering the diff — otherwise the
+        old index could point at an unrelated file in the new list."""
+        files = self._active_files()
+        self._selected_index = min(self._selected_index, max(0, len(files) - 1))
+        self._render_file_list()
         self._render_diff()
 
     def _update_diff_mode_label(self) -> None:
@@ -529,9 +562,10 @@ class HerdrDiffApp(App):
     def action_toggle_follow(self) -> None:
         self._follow = not self._follow
         self._update_follow_label()
-        if self._follow and self._snapshot and self._snapshot.files:
+        if self._follow and not self._base_branch_diff and self._active_files():
             # Jump to the most recently modified file on disk right away,
-            # rather than waiting for the next fs event.
+            # rather than waiting for the next fs event. (Only meaningful
+            # against the live working tree, same as the fs-event path.)
             index = self._newest_file_index()
             if index is not None:
                 self._expected_index = index
@@ -549,11 +583,12 @@ class HerdrDiffApp(App):
             return 0.0
 
     def _newest_file_index(self) -> Optional[int]:
-        if not self._snapshot or not self._snapshot.files:
+        files = self._active_files()
+        if not self._snapshot or not files:
             return None
         root = self._snapshot.root
         newest_index, newest_mtime = None, -1.0
-        for i, f in enumerate(self._snapshot.files):
+        for i, f in enumerate(files):
             mtime = self._mtime(root / f.path)
             if mtime > newest_mtime:
                 newest_index, newest_mtime = i, mtime

@@ -261,13 +261,63 @@ def detect_base_branch(root: Path) -> Optional[str]:
     return None
 
 
+def branch_file_list(root: Path, base_ref: str) -> list[FileChange]:
+    """Files touched by the whole branch vs base_ref: every commit since
+    diverging (`git diff --name-status base...HEAD`) plus the current
+    working-tree status (uncommitted changes, untracked files) — the same
+    set branch_diff_for_file() can produce a diff for.
+    """
+    files: dict[str, str] = {}
+    try:
+        name_status = _run(
+            ["diff", "--name-status", f"{base_ref}...HEAD"], cwd=root
+        )
+    except NotAGitRepo:
+        name_status = ""
+    for line in name_status.splitlines():
+        if not line.strip():
+            continue
+        parts = line.split("\t")
+        code, names = parts[0], parts[1:]
+        # Renames/copies: "R100\told\tnew" -> keep the new path, use the
+        # first letter (R/C) as the status code, matching porcelain's style.
+        path = names[-1] if names else ""
+        if not path:
+            continue
+        files[path] = code[:1]
+
+    working = snapshot(root)
+    for f in working.files:
+        files[f.path] = f.status  # working-tree state wins for any overlap
+
+    return sorted(
+        (FileChange(path=p, status=s) for p, s in files.items()),
+        key=lambda f: f.path,
+    )
+
+
+def branch_diff_for_file(root: Path, base_ref: str, change: FileChange) -> str:
+    """Diff for one file across the whole branch vs base_ref: every commit
+    since diverging, plus any uncommitted change on top. Untracked and
+    binary/oversized files are handled the same way diff_for_file() does.
+    """
+    reason = skip_reason(root, change)
+    if reason is not None:
+        return f"({reason})"
+    if change.status == "??":
+        return diff_for_file(root, change)
+    try:
+        return _run(["diff", f"{base_ref}...HEAD", "--", change.path], cwd=root)
+    except NotAGitRepo as exc:
+        return f"(diff failed for {change.path}: {exc})"
+
+
 def branch_diff(root: Path, base_ref: str) -> str:
-    """Whole-branch diff: working tree + all commits on HEAD since it
-    diverged from base_ref, i.e. what a PR against base_ref would show.
-    Uses git's own `base...HEAD` merge-base syntax, then folds in
-    uncommitted changes and untracked files the same way cumulative_diff
-    does, so this is a strict superset of 'commits so far' + 'not yet
-    committed'.
+    """Whole-branch cumulative diff: working tree + all commits on HEAD
+    since it diverged from base_ref, i.e. what a PR against base_ref would
+    show, as one combined text (used by the 'all files' toggle in branch
+    mode; per-file review uses branch_diff_for_file() instead, which keeps
+    filenames for syntax highlighting).
     """
     try:
         merge_base_diff = _run(["diff", f"{base_ref}...HEAD"], cwd=root)

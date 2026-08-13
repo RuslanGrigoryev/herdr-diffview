@@ -65,8 +65,8 @@ herdr-diffview --path ~/repo   # watch an explicit directory, skip Herdr lookup
 | `j` / `k` | move file selection down / up (also mouse-clickable) |
 | `v`       | switch the file panel between a flat list and a directory tree |
 | `space` / `enter` | (tree view) expand/collapse a directory        |
-| `a`       | toggle cumulative diff (all files) vs single file |
-| `b`       | toggle whole-branch diff against the repo's default branch (auto-detected: origin/HEAD, then `main`, then `master`) — like a PR preview, includes every commit on the current branch plus uncommitted changes |
+| `a`       | toggle all-files diff vs single file (applies to whichever base — working tree, or the branch base when `b` is on) |
+| `b`       | toggle diffing against the repo's default branch instead of the working tree (auto-detected: origin/HEAD, then `main`, then `master`) — the file list shows every file touched since diverging plus uncommitted changes; select one to see its highlighted diff, or press `a` for the whole-branch view (like a PR preview) |
 | `f`       | toggle "follow latest changed file" (on by default; clicking/navigating turns it off until pressed again) |
 | `t`       | cycle syntax theme (monokai, dracula, github-dark, one-dark, nord, gruvbox-dark, night-owl, solarized-dark, zenburn, material, inkpot, paraiso-dark, stata-dark, plus the ANSI-safe default) |
 | `PageUp`/`PageDown`/`Home`/`End`, mouse wheel | scroll the diff pane |
