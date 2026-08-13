@@ -8,9 +8,10 @@ from typing import Optional
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.reactive import reactive
-from textual.widgets import Footer, ListItem, ListView, Static
+from textual.widgets import Footer, ListItem, ListView, Static, Tree
+from textual.widgets.tree import TreeNode
 
 from . import git_watch, herdr_client
 from .diff_render import DARK_THEMES, render_diff
@@ -66,7 +67,94 @@ class FilePane(ListView):
     pass
 
 
-class DiffPane(Static):
+class FileTreePane(Tree):
+    """Directory-tree view over the same file list as FilePane. Leaf nodes
+    carry the file's index (into RepoSnapshot.files) as their `data`;
+    directory nodes carry None so highlight handling can tell them apart.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("(root)", data=None)
+        self.show_root = False
+        self.guide_depth = 2
+
+    def rebuild(self, files: list[git_watch.FileChange]) -> None:
+        collapsed_dirs = self._collapsed_dir_paths()
+        self.clear()
+        dir_nodes: dict[str, TreeNode] = {}
+
+        def dir_node_for(parts: tuple[str, ...]) -> TreeNode:
+            if not parts:
+                return self.root
+            key = "/".join(parts)
+            if key in dir_nodes:
+                return dir_nodes[key]
+            parent = dir_node_for(parts[:-1])
+            # New directories default to expanded; only a dir the user
+            # explicitly collapsed before this rebuild stays collapsed.
+            node = parent.add(parts[-1], data=None, expand=key not in collapsed_dirs)
+            dir_nodes[key] = node
+            return node
+
+        style_map = {
+            "M": "yellow",
+            "A": "green",
+            "D": "red",
+            "??": "green",
+            "R": "cyan",
+        }
+        for i, f in enumerate(files):
+            parts = f.path.split("/")
+            parent = dir_node_for(tuple(parts[:-1]))
+            style = style_map.get(f.status, "white")
+            label = Text(f"{f.marker} {parts[-1]}", style=style)
+            parent.add_leaf(label, data=i)
+
+    def _collapsed_dir_paths(self) -> set[str]:
+        """Best-effort: directory nodes have no stable identity across a
+        clear()+rebuild, so remembering by depth-first path string is the
+        simplest way to keep a dir the user collapsed from popping back open
+        on every refresh. New directories aren't in this set, so they
+        default to expanded (dir_node_for's `not in` check)."""
+        collapsed: set[str] = set()
+
+        def walk(node: TreeNode, path: tuple[str, ...]) -> None:
+            for child in node.children:
+                if child.allow_expand:
+                    child_path = path + (str(child.label),)
+                    if not child.is_expanded:
+                        collapsed.add("/".join(child_path))
+                    walk(child, child_path)
+
+        walk(self.root, ())
+        return collapsed
+
+    def select_index(self, index: Optional[int]) -> None:
+        """Move the tree cursor to the leaf node carrying this file index (or
+        clear the cursor entirely if index/node not found)."""
+        node = None if index is None else self._node_for_index(index)
+        self.move_cursor(node)
+
+    def _node_for_index(self, index: int) -> Optional[TreeNode]:
+        for node in self._nodes_by_index():
+            if node.data == index:
+                return node
+        return None
+
+    def _nodes_by_index(self):
+        def walk(node: TreeNode):
+            for child in node.children:
+                yield child
+                yield from walk(child)
+
+        return walk(self.root)
+
+
+class DiffContent(Static):
+    """The actual diff text. height:auto so it grows to fit content — it must
+    live inside a scrolling container (DiffPane) to be viewable past one
+    screen, since Static itself never clips or scrolls on its own."""
+
     def show_diff(
         self,
         text: str,
@@ -77,23 +165,42 @@ class DiffPane(Static):
         self.update(render_diff(text, hint_filename, wrap=wrap, theme=theme))
 
 
+class DiffPane(VerticalScroll):
+    """Scrollable viewport around DiffContent. Mouse wheel and PageUp/Down/
+    Home/End work here out of the box (VerticalScroll's own bindings); j/k/
+    arrow keys are still routed to the file list regardless of focus, so
+    this container intentionally doesn't grab those."""
+
+    def compose(self) -> ComposeResult:
+        yield DiffContent(id="diff-content")
+
+    def show_diff(self, *args, **kwargs) -> None:
+        self.query_one("#diff-content", DiffContent).show_diff(*args, **kwargs)
+        self.scroll_home(animate=False)
+
+
 class BannerPane(Static):
     """Shown when watching has ended (dir gone / pane closed)."""
 
 
+_UNSET = object()
+
+
 class HerdrDiffApp(App):
+    _UNSET = _UNSET
     CSS = """
     Screen { layout: vertical; }
     HeaderBar { height: 1; background: $panel; dock: top; }
     BannerPane { height: 3; background: $error 20%; color: $error; padding: 1; dock: top; }
     #body { height: 1fr; layout: vertical; }
-    FilePane {
+    FilePane, FileTreePane {
         height: 30%;
         min-height: 5;
         max-height: 15;
         border-bottom: solid $accent;
     }
-    DiffPane { height: 1fr; padding: 0 1; overflow-y: auto; overflow-x: auto; }
+    DiffPane { height: 1fr; overflow-y: auto; overflow-x: auto; scrollbar-gutter: stable; }
+    DiffContent { width: auto; min-width: 100%; padding: 0 1; }
     """
 
     BINDINGS = [
@@ -105,6 +212,11 @@ class HerdrDiffApp(App):
         Binding("w", "toggle_wrap", "Wrap"),
         Binding("f", "toggle_follow", "Follow latest"),
         Binding("t", "cycle_theme", "Theme"),
+        Binding("v", "toggle_view_mode", "List/Tree"),
+        Binding("pageup", "diff_page_up", "Diff PgUp", show=False),
+        Binding("pagedown", "diff_page_down", "Diff PgDn", show=False),
+        Binding("home", "diff_scroll_home", "Diff Home", show=False),
+        Binding("end", "diff_scroll_end", "Diff End", show=False),
         Binding("r", "refresh_now", "Refresh"),
         Binding("q", "quit", "Quit"),
     ]
@@ -118,8 +230,18 @@ class HerdrDiffApp(App):
         self._cumulative = False
         self._wrap = False
         self._follow = True
-        self._suppress_highlighted = 0
+        # The index we ourselves last set programmatically (follow-mode
+        # auto-jump, reload re-sync, 'f' re-enable). A Highlighted/
+        # NodeHighlighted event is only treated as a real user click when its
+        # index differs from this — deliberately NOT consumed/reset on
+        # match, since a single assignment can produce zero, one, or two
+        # matching events across ListView/Tree (clear() posts its own,
+        # separate from the following index= assignment) and Textual
+        # handlers read live widget state rather than a per-event snapshot,
+        # so every one of them would carry the same final index anyway.
+        self._expected_index: Optional[int] = self._UNSET
         self._theme_index = 0
+        self._view_mode = "list"  # "list" or "tree"
         self._watcher: Optional[DirWatcher] = None
         self._subscriber: Optional[AgentStatusSubscriber] = None
         self._ended = False
@@ -129,13 +251,16 @@ class HerdrDiffApp(App):
         yield BannerPane(id="banner")
         with Vertical(id="body"):
             yield FilePane(id="files")
+            yield FileTreePane(id="file-tree")
             yield DiffPane(id="diff")
         yield Footer()
 
     def on_mount(self) -> None:
         self.query_one("#banner", BannerPane).display = False
+        self.query_one("#file-tree", FileTreePane).display = False
         self._update_follow_label()
         self._update_theme_label()
+        self._update_view_mode_visibility()
         self._reload()
         self._watcher = DirWatcher(self._target_path, self._on_fs_change)
         self._watcher.start()
@@ -177,18 +302,16 @@ class HerdrDiffApp(App):
 
     def _render_file_list(self, changed_paths: Optional[set[Path]] = None) -> None:
         file_list = self.query_one("#files", FilePane)
-        had_index = file_list.index is not None
-        # clear() sets .index = None itself when there was a previous
-        # selection, which posts its own Highlighted message asynchronously —
-        # account for it so it isn't mistaken for a user click and doesn't
-        # cancel follow mode. (No previous index -> no message to suppress.)
-        if had_index:
-            self._suppress_highlighted += 1
-        file_list.clear()
+        tree = self.query_one("#file-tree", FileTreePane)
         assert self._snapshot is not None
+
+        file_list.clear()
+
         if not self._snapshot.files:
             file_list.append(ListItem(Static("(clean)", classes="dim")))
+            tree.rebuild([])
             return
+
         for f in self._snapshot.files:
             style = {
                 "M": "yellow",
@@ -199,6 +322,7 @@ class HerdrDiffApp(App):
             }.get(f.status, "white")
             label = Text(f"{f.marker} {f.path}", style=style)
             file_list.append(ListItem(Static(label)))
+        tree.rebuild(self._snapshot.files)
 
         if self._follow and changed_paths:
             match = self._match_changed_file(changed_paths)
@@ -213,8 +337,9 @@ class HerdrDiffApp(App):
 
         if self._selected_index >= len(self._snapshot.files):
             self._selected_index = max(0, len(self._snapshot.files) - 1)
-        self._suppress_highlighted += 1
+        self._expected_index = self._selected_index
         file_list.index = self._selected_index
+        tree.select_index(self._selected_index)
 
     def _match_changed_file(self, changed_paths: set[Path]) -> Optional[int]:
         """Map fs-watcher paths to an index in the current file list.
@@ -262,11 +387,28 @@ class HerdrDiffApp(App):
         index = event.list_view.index
         if index is None:
             return
+        self._select_from_view(index)
+
+    def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
+        """Fires for keyboard nav, mouse clicks, and our own programmatic
+        select_index() calls in the directory tree. Directory nodes carry
+        data=None and aren't selectable files."""
+        if event.node.tree.id != "file-tree":
+            return
+        index = event.node.data
+        if index is None or not self._snapshot or not self._snapshot.files:
+            return
+        self._select_from_view(index)
+
+    def _select_from_view(self, index: int) -> None:
         self._selected_index = index
-        if self._suppress_highlighted > 0:
-            # This selection came from our own reload (clear() + index=)
-            # rather than the user browsing — leave follow mode engaged.
-            self._suppress_highlighted = max(0, self._suppress_highlighted - 1)
+        if index == self._expected_index:
+            # Matches what we ourselves last set — not a user click. (A
+            # genuine click that happens to land back on the already-
+            # programmatically-selected file is indistinguishable from this
+            # and is harmless to treat the same way: nothing changes either
+            # way since that file is already showing.)
+            pass
         elif self._follow:
             # A real user click/keypress while following: hand control back
             # to the user until they re-enable follow with 'f'.
@@ -312,6 +454,9 @@ class HerdrDiffApp(App):
     # -- actions ------------------------------------------------------------
 
     def action_cursor_down(self) -> None:
+        if self._view_mode == "tree":
+            self.query_one("#file-tree", FileTreePane).action_cursor_down()
+            return
         if not self._snapshot or not self._snapshot.files:
             return
         new_index = min(self._selected_index + 1, len(self._snapshot.files) - 1)
@@ -319,6 +464,9 @@ class HerdrDiffApp(App):
         self.query_one("#files", FilePane).index = new_index
 
     def action_cursor_up(self) -> None:
+        if self._view_mode == "tree":
+            self.query_one("#file-tree", FileTreePane).action_cursor_up()
+            return
         if not self._snapshot or not self._snapshot.files:
             return
         new_index = max(self._selected_index - 1, 0)
@@ -340,8 +488,12 @@ class HerdrDiffApp(App):
             # rather than waiting for the next fs event.
             index = self._newest_file_index()
             if index is not None:
-                self._suppress_highlighted += 1
+                self._expected_index = index
+                self._selected_index = index
                 self.query_one("#files", FilePane).index = index
+                self.query_one("#file-tree", FileTreePane).select_index(index)
+                if not self._cumulative:
+                    self._render_diff()
 
     @staticmethod
     def _mtime(path: Path) -> float:
@@ -373,6 +525,32 @@ class HerdrDiffApp(App):
     def _update_theme_label(self) -> None:
         header = self.query_one("#header", HeaderBar)
         header.theme_label = f"theme: {DARK_THEMES[self._theme_index]}"
+
+    def action_toggle_view_mode(self) -> None:
+        self._view_mode = "tree" if self._view_mode == "list" else "list"
+        self._update_view_mode_visibility()
+
+    def _update_view_mode_visibility(self) -> None:
+        file_list = self.query_one("#files", FilePane)
+        tree = self.query_one("#file-tree", FileTreePane)
+        file_list.display = self._view_mode == "list"
+        tree.display = self._view_mode == "tree"
+        if self._view_mode == "tree":
+            tree.focus()
+        else:
+            file_list.focus()
+
+    def action_diff_page_up(self) -> None:
+        self.query_one("#diff", DiffPane).scroll_page_up()
+
+    def action_diff_page_down(self) -> None:
+        self.query_one("#diff", DiffPane).scroll_page_down()
+
+    def action_diff_scroll_home(self) -> None:
+        self.query_one("#diff", DiffPane).scroll_home()
+
+    def action_diff_scroll_end(self) -> None:
+        self.query_one("#diff", DiffPane).scroll_end()
 
     def action_refresh_now(self) -> None:
         self._reload()
