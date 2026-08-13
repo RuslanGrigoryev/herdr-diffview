@@ -87,7 +87,11 @@ class FileTreePane(Tree):
         self.show_root = False
         self.guide_depth = 2
 
-    def rebuild(self, files: list[git_watch.FileChange]) -> None:
+    def rebuild(
+        self,
+        files: list[git_watch.FileChange],
+        followed_index: Optional[int] = None,
+    ) -> None:
         collapsed_dirs = self._collapsed_dir_paths()
         self.clear()
         dir_nodes: dict[str, TreeNode] = {}
@@ -116,7 +120,10 @@ class FileTreePane(Tree):
             parts = f.path.split("/")
             parent = dir_node_for(tuple(parts[:-1]))
             style = style_map.get(f.status, "white")
-            label = Text(f"{f.marker} {parts[-1]}", style=style)
+            if i == followed_index:
+                label = Text(f"▶ {f.marker} {parts[-1]}", style=f"bold {style}")
+            else:
+                label = Text(f"  {f.marker} {parts[-1]}", style=style)
             parent.add_leaf(label, data=i)
 
     def _collapsed_dir_paths(self) -> set[str]:
@@ -330,18 +337,6 @@ class HerdrDiffApp(App):
             tree.rebuild([])
             return
 
-        for f in files:
-            style = {
-                "M": "yellow",
-                "A": "green",
-                "D": "red",
-                "??": "green",
-                "R": "cyan",
-            }.get(f.status, "white")
-            label = Text(f"{f.marker} {f.path}", style=style)
-            file_list.append(ListItem(Static(label)))
-        tree.rebuild(files)
-
         # Follow-mode auto-jump only makes sense against the live working
         # tree (that's what fs events describe); base-branch mode keeps
         # whatever selection it already had instead of trying to match.
@@ -358,6 +353,26 @@ class HerdrDiffApp(App):
 
         if self._selected_index >= len(files):
             self._selected_index = max(0, len(files) - 1)
+
+        # Follow mode always keeps the selection synced to the latest change,
+        # so the currently-selected row *is* the auto-followed one whenever
+        # it's on — mark it distinctly from a plain manual selection.
+        followed_index = self._selected_index if self._follow else None
+        for i, f in enumerate(files):
+            style = {
+                "M": "yellow",
+                "A": "green",
+                "D": "red",
+                "??": "green",
+                "R": "cyan",
+            }.get(f.status, "white")
+            if i == followed_index:
+                label = Text(f"▶ {f.marker} {f.path}", style=f"bold {style}")
+            else:
+                label = Text(f"  {f.marker} {f.path}", style=style)
+            file_list.append(ListItem(Static(label)))
+        tree.rebuild(files, followed_index=followed_index)
+
         self._expected_index = self._selected_index
         file_list.index = self._selected_index
         tree.select_index(self._selected_index)
@@ -570,12 +585,13 @@ class HerdrDiffApp(App):
             # against the live working tree, same as the fs-event path.)
             index = self._newest_file_index()
             if index is not None:
-                self._expected_index = index
                 self._selected_index = index
-                self.query_one("#files", FilePane).index = index
-                self.query_one("#file-tree", FileTreePane).select_index(index)
-                if not self._cumulative:
-                    self._render_diff()
+        # Route through _render_file_list either way: it both re-syncs the
+        # index and (re)draws the ▶ auto-followed marker — which needs to
+        # disappear immediately when follow turns off, not just stop moving.
+        self._render_file_list()
+        if not self._cumulative:
+            self._render_diff()
 
     @staticmethod
     def _mtime(path: Path) -> float:
