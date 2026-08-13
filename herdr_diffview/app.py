@@ -35,6 +35,7 @@ class HeaderBar(Static):
     stat_label: reactive[str] = reactive("")
     follow_label: reactive[str] = reactive("")
     theme_label: reactive[str] = reactive("")
+    diff_mode_label: reactive[str] = reactive("")
 
     def render(self) -> Text:
         t = Text()
@@ -56,6 +57,9 @@ class HeaderBar(Static):
         if self.theme_label:
             t.append("   ", style="dim")
             t.append(self.theme_label, style="dim")
+        if self.diff_mode_label:
+            t.append("   ", style="dim")
+            t.append(self.diff_mode_label, style="bold magenta")
         return t
 
 
@@ -212,6 +216,7 @@ class HerdrDiffApp(App):
         Binding("down", "cursor_down", "Down", show=False),
         Binding("up", "cursor_up", "Up", show=False),
         Binding("a", "toggle_cumulative", "All-files diff"),
+        Binding("b", "toggle_base_branch_diff", "Diff vs base branch"),
         Binding("f", "toggle_follow", "Follow latest"),
         Binding("t", "cycle_theme", "Theme"),
         Binding("v", "toggle_view_mode", "List/Tree"),
@@ -230,6 +235,8 @@ class HerdrDiffApp(App):
         self._snapshot: Optional[git_watch.RepoSnapshot] = None
         self._selected_index = 0
         self._cumulative = False
+        self._base_branch_diff = False
+        self._base_branch: Optional[str] = None
         self._follow = True
         # The index we ourselves last set programmatically (follow-mode
         # auto-jump, reload re-sync, 'f' re-enable). A Highlighted/
@@ -369,7 +376,10 @@ class HerdrDiffApp(App):
         if self._snapshot is None:
             return
         theme = DARK_THEMES[self._theme_index]
-        if self._cumulative:
+        if self._base_branch_diff and self._base_branch:
+            text = git_watch.branch_diff(self._snapshot.root, self._base_branch)
+            diff_pane.show_diff(text, hint_filename=None, theme=theme)
+        elif self._cumulative:
             text = git_watch.cumulative_diff(self._snapshot.root)
             diff_pane.show_diff(text, hint_filename=None, theme=theme)
         elif self._snapshot.files:
@@ -475,6 +485,46 @@ class HerdrDiffApp(App):
     def action_toggle_cumulative(self) -> None:
         self._cumulative = not self._cumulative
         self._render_diff()
+
+    def action_toggle_base_branch_diff(self) -> None:
+        if self._base_branch_diff:
+            self._base_branch_diff = False
+            self._update_diff_mode_label()
+            self._render_diff()
+            return
+        if not self._snapshot:
+            return
+        base = git_watch.detect_base_branch(self._snapshot.root)
+        if base is None:
+            self._flash_banner(
+                "No default branch found to diff against "
+                "(tried origin/HEAD, main, master)."
+            )
+            return
+        self._base_branch = base
+        self._base_branch_diff = True
+        self._update_diff_mode_label()
+        self._render_diff()
+
+    def _update_diff_mode_label(self) -> None:
+        header = self.query_one("#header", HeaderBar)
+        if self._base_branch_diff and self._base_branch:
+            header.diff_mode_label = f"vs {self._base_branch}"
+        else:
+            header.diff_mode_label = ""
+
+    def _flash_banner(self, message: str, seconds: float = 3.0) -> None:
+        """Transient banner for a non-fatal notice, reusing BannerPane's
+        already-styled slot without permanently ending the watch session."""
+        banner = self.query_one("#banner", BannerPane)
+        banner.update(f"⚠ {message}")
+        banner.display = True
+        self.set_timer(seconds, self._hide_banner)
+
+    def _hide_banner(self) -> None:
+        if self._ended:
+            return
+        self.query_one("#banner", BannerPane).display = False
 
     def action_toggle_follow(self) -> None:
         self._follow = not self._follow

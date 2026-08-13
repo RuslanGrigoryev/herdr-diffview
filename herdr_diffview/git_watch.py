@@ -215,6 +215,83 @@ def diff_for_file(root: Path, change: FileChange) -> str:
         return f"(diff failed for {change.path}: {exc})"
 
 
+# Common default-branch names, checked in this order against local and
+# origin refs. Covers the two conventions in the wild without needing any
+# config from the user.
+_DEFAULT_BRANCH_CANDIDATES = ("main", "master")
+
+
+def _ref_exists(root: Path, ref: str) -> bool:
+    try:
+        _run(["rev-parse", "--verify", "--quiet", ref], cwd=root)
+        return True
+    except NotAGitRepo:
+        return False
+
+
+def detect_base_branch(root: Path) -> Optional[str]:
+    """Best-effort default-branch detection, no config required.
+
+    Tries, in order: origin's reported HEAD (authoritative when available),
+    then common local branch names, then the same names under origin/. Skips
+    whichever branch is currently checked out — diffing a branch against
+    itself is never useful. Returns None if nothing plausible is found (e.g.
+    a fresh repo with only one commit and no remote).
+    """
+    current = current_branch(root)
+
+    try:
+        origin_head = _run(
+            ["symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD"], cwd=root
+        ).strip()
+    except NotAGitRepo:
+        origin_head = ""
+    if origin_head:
+        short = origin_head.removeprefix("origin/")
+        if short != current and _ref_exists(root, origin_head):
+            return origin_head
+
+    for name in _DEFAULT_BRANCH_CANDIDATES:
+        if name != current and _ref_exists(root, name):
+            return name
+    for name in _DEFAULT_BRANCH_CANDIDATES:
+        ref = f"origin/{name}"
+        if name != current and _ref_exists(root, ref):
+            return ref
+    return None
+
+
+def branch_diff(root: Path, base_ref: str) -> str:
+    """Whole-branch diff: working tree + all commits on HEAD since it
+    diverged from base_ref, i.e. what a PR against base_ref would show.
+    Uses git's own `base...HEAD` merge-base syntax, then folds in
+    uncommitted changes and untracked files the same way cumulative_diff
+    does, so this is a strict superset of 'commits so far' + 'not yet
+    committed'.
+    """
+    try:
+        merge_base_diff = _run(["diff", f"{base_ref}...HEAD"], cwd=root)
+    except NotAGitRepo as exc:
+        return f"(could not diff against {base_ref}: {exc})"
+    try:
+        working_diff = _run(["diff", "HEAD"], cwd=root)
+    except NotAGitRepo:
+        working_diff = ""
+    parts = [p for p in (merge_base_diff, working_diff) if p.strip()]
+    snap = snapshot(root)
+    for f in snap.files:
+        if f.status == "??":
+            parts.append(diff_for_file(root, f))
+    combined = "\n".join(p for p in parts if p.strip())
+    if len(combined) > MAX_DIFF_BYTES:
+        combined = (
+            combined[:MAX_DIFF_BYTES]
+            + f"\n\n... (truncated, branch diff exceeds "
+            f"{_human_size(MAX_DIFF_BYTES)} — view files individually instead)"
+        )
+    return combined
+
+
 def cumulative_diff(root: Path) -> str:
     # Tracked binary files are already summarized by git itself ("Binary
     # files a/x and b/x differ") inside `git diff HEAD`, so only untracked
