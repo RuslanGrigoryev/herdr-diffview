@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
+from rich.style import Style
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -121,7 +122,8 @@ class FileTreePane(Tree):
             parent = dir_node_for(tuple(parts[:-1]))
             style = style_map.get(f.status, "white")
             if i == followed_index:
-                label = Text(f"▶ {f.marker} {parts[-1]}", style=f"bold {style}")
+                label = Text("> ", style=Style(bold=True, bgcolor="dark_green"))
+                label.append(f"{f.marker} {parts[-1]}", style=f"bold {style}")
             else:
                 label = Text(f"  {f.marker} {parts[-1]}", style=style)
             parent.add_leaf(label, data=i)
@@ -242,6 +244,11 @@ class HerdrDiffApp(App):
         self._pane_id = pane_id
         self._snapshot: Optional[git_watch.RepoSnapshot] = None
         self._selected_index = 0
+        # Tracks what's currently rendered in the file list/tree (see
+        # _render_file_list) so a reload that doesn't actually change the
+        # displayed set/markers can skip the clear()+rebuild that would
+        # otherwise flicker every file row on every debounced fs event.
+        self._file_list_signature: tuple = ()
         self._cumulative = False
         self._base_branch_diff = False
         self._base_branch: Optional[str] = None
@@ -330,11 +337,12 @@ class HerdrDiffApp(App):
         tree = self.query_one("#file-tree", FileTreePane)
         files = self._active_files()
 
-        file_list.clear()
-
         if not files:
-            file_list.append(ListItem(Static("(clean)", classes="dim")))
-            tree.rebuild([])
+            if self._file_list_signature != ():
+                file_list.clear()
+                file_list.append(ListItem(Static("(clean)", classes="dim")))
+                tree.rebuild([])
+                self._file_list_signature = ()
             return
 
         # Follow-mode auto-jump only makes sense against the live working
@@ -358,20 +366,38 @@ class HerdrDiffApp(App):
         # so the currently-selected row *is* the auto-followed one whenever
         # it's on — mark it distinctly from a plain manual selection.
         followed_index = self._selected_index if self._follow else None
-        for i, f in enumerate(files):
-            style = {
-                "M": "yellow",
-                "A": "green",
-                "D": "red",
-                "??": "green",
-                "R": "cyan",
-            }.get(f.status, "white")
-            if i == followed_index:
-                label = Text(f"▶ {f.marker} {f.path}", style=f"bold {style}")
-            else:
-                label = Text(f"  {f.marker} {f.path}", style=style)
-            file_list.append(ListItem(Static(label)))
-        tree.rebuild(files, followed_index=followed_index)
+
+        # Rebuilding the list/tree on every reload (which fires on every
+        # debounced fs event — i.e. potentially every ~150ms while the agent
+        # is actively writing) causes a visible flash/flicker even when the
+        # actual file set and markers haven't changed, since ListView.clear()
+        # tears down and recreates every row. Skip the rebuild entirely when
+        # nothing about what should be *displayed* actually changed; only the
+        # selected diff content below needs to refresh every time.
+        signature = tuple((f.path, f.status) for f in files) + (followed_index,)
+        if signature != self._file_list_signature:
+            file_list.clear()
+            for i, f in enumerate(files):
+                style = {
+                    "M": "yellow",
+                    "A": "green",
+                    "D": "red",
+                    "??": "green",
+                    "R": "cyan",
+                }.get(f.status, "white")
+                if i == followed_index:
+                    # Bold text alone can be indistinguishable on the row
+                    # that's ALSO the list's cursor highlight (ListView's own
+                    # CSS already recolors that row); an explicit background
+                    # tint on the marker chars themselves stays visible
+                    # regardless.
+                    label = Text("> ", style=Style(bold=True, bgcolor="dark_green"))
+                    label.append(f"{f.marker} {f.path}", style=f"bold {style}")
+                else:
+                    label = Text(f"  {f.marker} {f.path}", style=style)
+                file_list.append(ListItem(Static(label)))
+            tree.rebuild(files, followed_index=followed_index)
+            self._file_list_signature = signature
 
         self._expected_index = self._selected_index
         file_list.index = self._selected_index
@@ -587,7 +613,7 @@ class HerdrDiffApp(App):
             if index is not None:
                 self._selected_index = index
         # Route through _render_file_list either way: it both re-syncs the
-        # index and (re)draws the ▶ auto-followed marker — which needs to
+        # index and (re)draws the > auto-followed marker — which needs to
         # disappear immediately when follow turns off, not just stop moving.
         self._render_file_list()
         if not self._cumulative:
