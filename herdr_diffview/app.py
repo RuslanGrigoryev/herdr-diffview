@@ -31,6 +31,8 @@ class HeaderBar(Static):
     branch_label: reactive[str] = reactive("")
     status_label: reactive[str] = reactive("")
     status_style: reactive[str] = reactive("dim")
+    stat_label: reactive[str] = reactive("")
+    wrap_label: reactive[str] = reactive("")
 
     def render(self) -> Text:
         t = Text()
@@ -40,9 +42,15 @@ class HeaderBar(Static):
         if self.branch_label:
             t.append("  ")
             t.append(self.branch_label, style="cyan")
+        if self.stat_label:
+            t.append("  ")
+            t.append(self.stat_label, style="magenta")
         if self.status_label:
             t.append("   agent: ", style="dim")
             t.append(self.status_label, style=self.status_style)
+        if self.wrap_label:
+            t.append("   ", style="dim")
+            t.append(self.wrap_label, style="dim")
         return t
 
 
@@ -51,8 +59,10 @@ class FilePane(ListView):
 
 
 class DiffPane(Static):
-    def show_diff(self, text: str, hint_filename: str | None = None) -> None:
-        self.update(render_diff(text, hint_filename))
+    def show_diff(
+        self, text: str, hint_filename: str | None = None, wrap: bool = False
+    ) -> None:
+        self.update(render_diff(text, hint_filename, wrap=wrap))
 
 
 class BannerPane(Static):
@@ -80,6 +90,7 @@ class HerdrDiffApp(App):
         Binding("down", "cursor_down", "Down", show=False),
         Binding("up", "cursor_up", "Up", show=False),
         Binding("a", "toggle_cumulative", "All-files diff"),
+        Binding("w", "toggle_wrap", "Wrap"),
         Binding("r", "refresh_now", "Refresh"),
         Binding("q", "quit", "Quit"),
     ]
@@ -91,6 +102,7 @@ class HerdrDiffApp(App):
         self._snapshot: Optional[git_watch.RepoSnapshot] = None
         self._selected_index = 0
         self._cumulative = False
+        self._wrap = False
         self._watcher: Optional[DirWatcher] = None
         self._subscriber: Optional[AgentStatusSubscriber] = None
         self._ended = False
@@ -138,6 +150,9 @@ class HerdrDiffApp(App):
         header = self.query_one("#header", HeaderBar)
         header.repo_label = snap.root.name
         header.branch_label = snap.branch
+        header.stat_label = git_watch.diffstat_from_text(
+            git_watch.cumulative_diff(snap.root)
+        ).render()
         self._render_file_list()
         self._render_diff()
 
@@ -164,17 +179,19 @@ class HerdrDiffApp(App):
 
     def _render_diff(self) -> None:
         diff_pane = self.query_one("#diff", DiffPane)
+        header = self.query_one("#header", HeaderBar)
         if self._snapshot is None:
             return
         if self._cumulative:
             text = git_watch.cumulative_diff(self._snapshot.root)
-            diff_pane.show_diff(text, hint_filename=None)
+            diff_pane.show_diff(text, hint_filename=None, wrap=self._wrap)
         elif self._snapshot.files:
             f = self._snapshot.files[self._selected_index]
             text = git_watch.diff_for_file(self._snapshot.root, f)
-            diff_pane.show_diff(text, hint_filename=f.path)
+            diff_pane.show_diff(text, hint_filename=f.path, wrap=self._wrap)
         else:
-            diff_pane.show_diff("", hint_filename=None)
+            diff_pane.show_diff("", hint_filename=None, wrap=self._wrap)
+        header.wrap_label = "wrap: on" if self._wrap else "wrap: off"
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         """Fires for both keyboard nav and mouse clicks in the file list."""
@@ -238,6 +255,10 @@ class HerdrDiffApp(App):
 
     def action_toggle_cumulative(self) -> None:
         self._cumulative = not self._cumulative
+        self._render_diff()
+
+    def action_toggle_wrap(self) -> None:
+        self._wrap = not self._wrap
         self._render_diff()
 
     def action_refresh_now(self) -> None:

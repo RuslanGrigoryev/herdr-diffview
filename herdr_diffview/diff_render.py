@@ -55,12 +55,19 @@ def _highlight_line(code: str, lexer_name: str) -> Text:
     return text
 
 
-def render_diff(diff_text: str, hint_filename: str | None = None) -> Text:
+def render_diff(
+    diff_text: str,
+    hint_filename: str | None = None,
+    wrap: bool = False,
+) -> Text:
     """Build a Rich Text with per-line syntax + diff coloring.
 
     hint_filename lets the caller force a lexer (e.g. the selected file's
     name) instead of relying on the `+++ b/...` line inside the diff text,
     which matters for untracked-file pseudo-diffs where every line is `+`.
+    wrap controls whether long lines soft-wrap (True) or extend past the
+    viewport for horizontal scrolling (False, the default — matches how a
+    terminal diff normally reads).
     """
     if not diff_text.strip():
         return Text("(no diff)", style="dim italic")
@@ -103,4 +110,6 @@ def render_diff(diff_text: str, hint_filename: str | None = None) -> Text:
         out.append_text(code_text)
         out.append(newline)
 
+    out.no_wrap = not wrap
+    out.overflow = "fold" if wrap else "ignore"
     return out

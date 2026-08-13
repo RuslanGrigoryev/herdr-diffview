@@ -42,6 +42,50 @@ class RepoSnapshot:
         return None
 
 
+@dataclass
+class DiffStat:
+    files_changed: int
+    additions: int
+    deletions: int
+
+    def render(self) -> str:
+        if self.files_changed == 0:
+            return ""
+        return (
+            f"{self.files_changed} file{'s' if self.files_changed != 1 else ''} "
+            f"+{self.additions} -{self.deletions}"
+        )
+
+
+def diffstat_from_text(diff_text: str) -> DiffStat:
+    """Count +/- lines and touched files directly from unified diff text.
+
+    We compute this from the diff we already generated (works uniformly for
+    tracked changes and untracked-file pseudo-diffs) instead of shelling out
+    to `git diff --shortstat`, which does not cover untracked files.
+    """
+    additions = 0
+    deletions = 0
+    files = set()
+    current_file: Optional[str] = None
+    for line in diff_text.splitlines():
+        if line.startswith("+++ "):
+            name = line[4:].strip()
+            if name.startswith("b/"):
+                name = name[2:]
+            if name != "/dev/null":
+                current_file = name
+                files.add(current_file)
+            continue
+        if line.startswith("+++") or line.startswith("---") or line.startswith("diff --git") or line.startswith("index "):
+            continue
+        if line.startswith("+"):
+            additions += 1
+        elif line.startswith("-"):
+            deletions += 1
+    return DiffStat(files_changed=len(files), additions=additions, deletions=deletions)
+
+
 def _run(args: list[str], cwd: Path, timeout: float = 5.0) -> str:
     proc = subprocess.run(
         ["git", *args],
