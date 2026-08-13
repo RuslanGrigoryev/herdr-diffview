@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "herdr-diffview"
+version = "0.1.0"
+description = "Live git-diff viewer for a Herdr-managed agent pane"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "textual>=0.58",
+    "rich>=13.7",
+    "watchdog>=4.0",
+]
+
+[project.scripts]
+herdr-diffview = "herdr_diffview.app:main"
+
+[tool.setuptools.packages.find]
+include = ["herdr_diffview*"]
