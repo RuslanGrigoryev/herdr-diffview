@@ -59,7 +59,8 @@ class HeaderBar(Static):
             t.append(self.theme_label, style="dim")
         if self.diff_mode_label:
             t.append("   ", style="dim")
-            t.append(self.diff_mode_label, style="bold magenta")
+            style = "bold magenta" if self.diff_mode_label != "vs HEAD" else "dim"
+            t.append(self.diff_mode_label, style=style)
         return t
 
 
@@ -269,6 +270,7 @@ class HerdrDiffApp(App):
         self.query_one("#file-tree", FileTreePane).display = False
         self._update_follow_label()
         self._update_theme_label()
+        self._update_diff_mode_label()
         self._update_view_mode_visibility()
         self._reload()
         self._watcher = DirWatcher(self._target_path, self._on_fs_change)
@@ -544,7 +546,7 @@ class HerdrDiffApp(App):
         if self._base_branch_diff and self._base_branch:
             header.diff_mode_label = f"vs {self._base_branch}"
         else:
-            header.diff_mode_label = ""
+            header.diff_mode_label = "vs HEAD"
 
     def _flash_banner(self, message: str, seconds: float = 3.0) -> None:
         """Transient banner for a non-fatal notice, reusing BannerPane's
