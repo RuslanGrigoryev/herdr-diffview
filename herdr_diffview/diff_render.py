@@ -19,14 +19,18 @@ from rich.style import Style
 from rich.syntax import Syntax
 from rich.text import Text
 
-ADDED_BG = Style(bgcolor="#123a12")
-REMOVED_BG = Style(bgcolor="#3a1212")
+# Softer than a full ANSI green/red background — closer to how GitHub/lazygit
+# tint diff lines, easier to read code through on long diffs.
+ADDED_BG = Style(bgcolor="#0f2415")
+REMOVED_BG = Style(bgcolor="#2a1216")
 HUNK_STYLE = Style(color="cyan", bold=True)
 FILE_HEADER_STYLE = Style(color="bright_white", bold=True)
 META_STYLE = Style(color="grey50")
 GUTTER_STYLE = Style(color="grey42")
 GUTTER_ADDED_STYLE = Style(color="green")
 GUTTER_REMOVED_STYLE = Style(color="red")
+GUTTER_SEPARATOR_STYLE = Style(color="grey23")
+GUTTER_SEPARATOR = "\u2502"  # │
 
 _HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
@@ -112,6 +116,12 @@ def _gutter_width(diff_text: str) -> int:
     return widest + 2
 
 
+def _gutter_prefix_width(width: int) -> int:
+    """Total column width consumed by 'old new│ ' so non-code lines (hunk
+    headers, file headers) can pad themselves to the same indent."""
+    return 2 * width + 1 + 2  # two numbers + separator + two spaces
+
+
 def render_diff(
     diff_text: str,
     hint_filename: str | None = None,
@@ -143,12 +153,14 @@ def render_diff(
     for i, line in enumerate(lines):
         newline = "\n" if i < len(lines) - 1 else ""
 
+        prefix_width = _gutter_prefix_width(width)
+
         if line.startswith(("diff --git", "index ")):
-            out.append(" " * (2 * width + 2))
+            out.append(" " * prefix_width)
             out.append(line + newline, style=FILE_HEADER_STYLE)
             continue
         if line.startswith(("--- ", "+++ ")):
-            out.append(" " * (2 * width + 2))
+            out.append(" " * prefix_width)
             if line.startswith("+++ ") and lexer_name == "text":
                 candidate = line[4:].strip()
                 if candidate.startswith("b/"):
@@ -160,7 +172,11 @@ def render_diff(
         hunk_match = _HUNK_HEADER_RE.match(line)
         if hunk_match:
             old_no, new_no = int(hunk_match.group(1)), int(hunk_match.group(2))
-            out.append(" " * (2 * width + 2))
+            # Blank line before each new hunk (not the very first line of
+            # the diff) so separate hunks don't visually run together.
+            if out.plain:
+                out.append("\n")
+            out.append(" " * prefix_width)
             out.append(line + newline, style=HUNK_STYLE)
             continue
 
@@ -184,6 +200,7 @@ def render_diff(
         out.append(old_str.rjust(width), style=gutter_style)
         out.append(" ")
         out.append(new_str.rjust(width), style=gutter_style)
+        out.append(GUTTER_SEPARATOR, style=GUTTER_SEPARATOR_STYLE)
         out.append(" ")
 
         code_text = _highlight_line(code, lexer_name, theme)
