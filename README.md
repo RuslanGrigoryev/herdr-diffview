@@ -62,10 +62,15 @@ herdr-diffview --path ~/repo   # watch an explicit directory, skip Herdr lookup
 
 | Key       | Action                                         |
 |-----------|-------------------------------------------------|
-| `j` / `k` | move file selection down / up                   |
+| `j` / `k` | move file selection down / up (also mouse-clickable) |
 | `a`       | toggle cumulative diff (all files) vs single file |
+| `w`       | toggle long-line wrap vs. horizontal scroll     |
+| `f`       | toggle "follow latest changed file" (on by default; clicking/navigating turns it off until pressed again) |
 | `r`       | force refresh                                   |
 | `q`       | quit                                            |
+
+The header also shows a running `<N> files +<adds> -<dels>` diffstat for the
+full working tree, independent of which file is selected.
 
 ## How it works
 

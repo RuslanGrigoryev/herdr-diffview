@@ -33,6 +33,7 @@ class HeaderBar(Static):
     status_style: reactive[str] = reactive("dim")
     stat_label: reactive[str] = reactive("")
     wrap_label: reactive[str] = reactive("")
+    follow_label: reactive[str] = reactive("")
 
     def render(self) -> Text:
         t = Text()
@@ -51,6 +52,9 @@ class HeaderBar(Static):
         if self.wrap_label:
             t.append("   ", style="dim")
             t.append(self.wrap_label, style="dim")
+        if self.follow_label:
+            t.append("   ", style="dim")
+            t.append(self.follow_label, style="green" if "on" in self.follow_label else "dim")
         return t
 
 
@@ -91,6 +95,7 @@ class HerdrDiffApp(App):
         Binding("up", "cursor_up", "Up", show=False),
         Binding("a", "toggle_cumulative", "All-files diff"),
         Binding("w", "toggle_wrap", "Wrap"),
+        Binding("f", "toggle_follow", "Follow latest"),
         Binding("r", "refresh_now", "Refresh"),
         Binding("q", "quit", "Quit"),
     ]
@@ -103,6 +108,8 @@ class HerdrDiffApp(App):
         self._selected_index = 0
         self._cumulative = False
         self._wrap = False
+        self._follow = True
+        self._programmatic_select = False
         self._watcher: Optional[DirWatcher] = None
         self._subscriber: Optional[AgentStatusSubscriber] = None
         self._ended = False
@@ -117,6 +124,7 @@ class HerdrDiffApp(App):
 
     def on_mount(self) -> None:
         self.query_one("#banner", BannerPane).display = False
+        self._update_follow_label()
         self._reload()
         self._watcher = DirWatcher(self._target_path, self._on_fs_change)
         self._watcher.start()
@@ -135,10 +143,10 @@ class HerdrDiffApp(App):
 
     # -- data refresh -----------------------------------------------------
 
-    def _on_fs_change(self) -> None:
-        self.call_from_thread(self._reload)
+    def _on_fs_change(self, changed_paths: set[Path]) -> None:
+        self.call_from_thread(self._reload, changed_paths)
 
-    def _reload(self) -> None:
+    def _reload(self, changed_paths: Optional[set[Path]] = None) -> None:
         if self._ended:
             return
         try:
@@ -153,10 +161,10 @@ class HerdrDiffApp(App):
         header.stat_label = git_watch.diffstat_from_text(
             git_watch.cumulative_diff(snap.root)
         ).render()
-        self._render_file_list()
+        self._render_file_list(changed_paths)
         self._render_diff()
 
-    def _render_file_list(self) -> None:
+    def _render_file_list(self, changed_paths: Optional[set[Path]] = None) -> None:
         file_list = self.query_one("#files", FilePane)
         file_list.clear()
         assert self._snapshot is not None
@@ -173,9 +181,33 @@ class HerdrDiffApp(App):
             }.get(f.status, "white")
             label = Text(f"{f.marker} {f.path}", style=style)
             file_list.append(ListItem(Static(label)))
+
+        if self._follow and changed_paths:
+            match = self._match_changed_file(changed_paths)
+            if match is not None:
+                self._selected_index = match
+
         if self._selected_index >= len(self._snapshot.files):
             self._selected_index = max(0, len(self._snapshot.files) - 1)
+        self._programmatic_select = True
         file_list.index = self._selected_index
+
+    def _match_changed_file(self, changed_paths: set[Path]) -> Optional[int]:
+        """Map fs-watcher paths to an index in the current file list."""
+        assert self._snapshot is not None
+        root = self._snapshot.root
+        rel_changed = set()
+        for p in changed_paths:
+            try:
+                rel_changed.add(str(p.relative_to(root)))
+            except ValueError:
+                continue
+        if not rel_changed:
+            return None
+        for i, f in enumerate(self._snapshot.files):
+            if f.path in rel_changed:
+                return i
+        return None
 
     def _render_diff(self) -> None:
         diff_pane = self.query_one("#diff", DiffPane)
@@ -194,13 +226,23 @@ class HerdrDiffApp(App):
         header.wrap_label = "wrap: on" if self._wrap else "wrap: off"
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        """Fires for both keyboard nav and mouse clicks in the file list."""
+        """Fires for both keyboard nav, mouse clicks, and our own programmatic
+        follow-mode selection in the file list."""
         if event.list_view.id != "files" or not self._snapshot or not self._snapshot.files:
             return
         index = event.list_view.index
         if index is None:
             return
         self._selected_index = index
+        if self._programmatic_select:
+            # This selection came from follow-mode auto-jumping, not the user
+            # browsing manually — leave follow mode engaged.
+            self._programmatic_select = False
+        elif self._follow:
+            # A real user click/keypress while following: hand control back
+            # to the user until they re-enable follow with 'f'.
+            self._follow = False
+            self._update_follow_label()
         if not self._cumulative:
             self._render_diff()
 
@@ -260,6 +302,31 @@ class HerdrDiffApp(App):
     def action_toggle_wrap(self) -> None:
         self._wrap = not self._wrap
         self._render_diff()
+
+    def action_toggle_follow(self) -> None:
+        self._follow = not self._follow
+        self._update_follow_label()
+        if self._follow and self._snapshot and self._snapshot.files:
+            # Jump to the most recently modified file on disk right away,
+            # rather than waiting for the next fs event.
+            newest = max(
+                self._snapshot.files,
+                key=lambda f: self._mtime(self._snapshot.root / f.path),
+            )
+            index = self._snapshot.files.index(newest)
+            self._programmatic_select = True
+            self.query_one("#files", FilePane).index = index
+
+    @staticmethod
+    def _mtime(path: Path) -> float:
+        try:
+            return path.stat().st_mtime
+        except OSError:
+            return 0.0
+
+    def _update_follow_label(self) -> None:
+        header = self.query_one("#header", HeaderBar)
+        header.follow_label = "follow: on" if self._follow else "follow: off"
 
     def action_refresh_now(self) -> None:
         self._reload()

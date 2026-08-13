@@ -1,5 +1,7 @@
 """Debounced filesystem watcher: fires a single callback no more than once
-per `debounce_seconds`, however many fs events land in that window."""
+per `debounce_seconds`, however many fs events land in that window. The
+callback receives the set of paths that changed during the debounce window,
+so callers can e.g. auto-select whichever file the agent just touched."""
 from __future__ import annotations
 
 import threading
@@ -11,21 +13,30 @@ from watchdog.observers import Observer
 
 
 class _DebouncedHandler(FileSystemEventHandler):
-    def __init__(self, callback: Callable[[], None], debounce_seconds: float) -> None:
+    def __init__(
+        self,
+        callback: Callable[[set[Path]], None],
+        debounce_seconds: float,
+    ) -> None:
         self._callback = callback
         self._debounce_seconds = debounce_seconds
         self._timer: threading.Timer | None = None
         self._lock = threading.Lock()
+        self._pending: set[Path] = set()
 
     def _fire(self) -> None:
         with self._lock:
+            changed = self._pending
+            self._pending = set()
             self._timer = None
-        self._callback()
+        self._callback(changed)
 
     def on_any_event(self, event) -> None:  # noqa: ANN001 - watchdog API
-        if ".git" in Path(event.src_path).parts:
+        path = Path(event.src_path)
+        if ".git" in path.parts:
             return
         with self._lock:
+            self._pending.add(path)
             if self._timer is not None:
                 self._timer.cancel()
             self._timer = threading.Timer(self._debounce_seconds, self._fire)
@@ -37,7 +48,7 @@ class DirWatcher:
     def __init__(
         self,
         path: Path,
-        on_change: Callable[[], None],
+        on_change: Callable[[set[Path]], None],
         debounce_seconds: float = 0.15,
     ) -> None:
         self._observer = Observer()
