@@ -32,11 +32,21 @@ class _DebouncedHandler(FileSystemEventHandler):
         self._callback(changed)
 
     def on_any_event(self, event) -> None:  # noqa: ANN001 - watchdog API
-        path = Path(event.src_path)
-        if ".git" in path.parts:
+        if getattr(event, "is_directory", False):
+            return
+        # Many editors/tools write atomically: write a temp file, then rename
+        # it over the real target. That fires a *moved* event whose real
+        # filename is dest_path, not src_path — record both so the final
+        # name is always in the changed set.
+        paths = [Path(event.src_path)]
+        dest = getattr(event, "dest_path", "")
+        if dest:
+            paths.append(Path(dest))
+        paths = [p for p in paths if ".git" not in p.parts]
+        if not paths:
             return
         with self._lock:
-            self._pending.add(path)
+            self._pending.update(paths)
             if self._timer is not None:
                 self._timer.cancel()
             self._timer = threading.Timer(self._debounce_seconds, self._fire)

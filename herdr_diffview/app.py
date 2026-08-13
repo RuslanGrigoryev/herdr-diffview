@@ -184,6 +184,12 @@ class HerdrDiffApp(App):
 
         if self._follow and changed_paths:
             match = self._match_changed_file(changed_paths)
+            if match is None:
+                # Some editors bounce writes through swap/hidden files that
+                # never appear in git status, so the direct path match can
+                # come up empty even though something real changed. Fall
+                # back to whichever tracked file was modified most recently.
+                match = self._newest_file_index()
             if match is not None:
                 self._selected_index = match
 
@@ -193,14 +199,18 @@ class HerdrDiffApp(App):
         file_list.index = self._selected_index
 
     def _match_changed_file(self, changed_paths: set[Path]) -> Optional[int]:
-        """Map fs-watcher paths to an index in the current file list."""
+        """Map fs-watcher paths to an index in the current file list.
+
+        Resolves both sides (watcher root vs. git-reported root can differ on
+        symlinked paths, e.g. macOS's /tmp -> /private/tmp) before comparing.
+        """
         assert self._snapshot is not None
-        root = self._snapshot.root
+        root = self._snapshot.root.resolve()
         rel_changed = set()
         for p in changed_paths:
             try:
-                rel_changed.add(str(p.relative_to(root)))
-            except ValueError:
+                rel_changed.add(str(p.resolve().relative_to(root)))
+            except (ValueError, OSError):
                 continue
         if not rel_changed:
             return None
@@ -309,13 +319,10 @@ class HerdrDiffApp(App):
         if self._follow and self._snapshot and self._snapshot.files:
             # Jump to the most recently modified file on disk right away,
             # rather than waiting for the next fs event.
-            newest = max(
-                self._snapshot.files,
-                key=lambda f: self._mtime(self._snapshot.root / f.path),
-            )
-            index = self._snapshot.files.index(newest)
-            self._programmatic_select = True
-            self.query_one("#files", FilePane).index = index
+            index = self._newest_file_index()
+            if index is not None:
+                self._programmatic_select = True
+                self.query_one("#files", FilePane).index = index
 
     @staticmethod
     def _mtime(path: Path) -> float:
@@ -323,6 +330,17 @@ class HerdrDiffApp(App):
             return path.stat().st_mtime
         except OSError:
             return 0.0
+
+    def _newest_file_index(self) -> Optional[int]:
+        if not self._snapshot or not self._snapshot.files:
+            return None
+        root = self._snapshot.root
+        newest_index, newest_mtime = None, -1.0
+        for i, f in enumerate(self._snapshot.files):
+            mtime = self._mtime(root / f.path)
+            if mtime > newest_mtime:
+                newest_index, newest_mtime = i, mtime
+        return newest_index
 
     def _update_follow_label(self) -> None:
         header = self.query_one("#header", HeaderBar)
