@@ -33,7 +33,6 @@ class HeaderBar(Static):
     status_label: reactive[str] = reactive("")
     status_style: reactive[str] = reactive("dim")
     stat_label: reactive[str] = reactive("")
-    wrap_label: reactive[str] = reactive("")
     follow_label: reactive[str] = reactive("")
     theme_label: reactive[str] = reactive("")
 
@@ -51,9 +50,6 @@ class HeaderBar(Static):
         if self.status_label:
             t.append("   agent: ", style="dim")
             t.append(self.status_label, style=self.status_style)
-        if self.wrap_label:
-            t.append("   ", style="dim")
-            t.append(self.wrap_label, style="dim")
         if self.follow_label:
             t.append("   ", style="dim")
             t.append(self.follow_label, style="green" if "on" in self.follow_label else "dim")
@@ -167,10 +163,9 @@ class DiffContent(Static):
         self,
         text: str,
         hint_filename: str | None = None,
-        wrap: bool = False,
         theme: str = "ansi_dark",
     ) -> None:
-        self.update(render_diff(text, hint_filename, wrap=wrap, theme=theme))
+        self.update(render_diff(text, hint_filename, wrap=True, theme=theme))
 
 
 class DiffPane(VerticalScroll):
@@ -207,8 +202,8 @@ class HerdrDiffApp(App):
         max-height: 15;
         border-bottom: solid $accent;
     }
-    DiffPane { height: 1fr; overflow-y: auto; overflow-x: auto; scrollbar-gutter: stable; }
-    DiffContent { width: auto; min-width: 100%; padding: 0 1; }
+    DiffPane { height: 1fr; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
+    DiffContent { width: 100%; padding: 0 1; }
     """
 
     BINDINGS = [
@@ -217,7 +212,6 @@ class HerdrDiffApp(App):
         Binding("down", "cursor_down", "Down", show=False),
         Binding("up", "cursor_up", "Up", show=False),
         Binding("a", "toggle_cumulative", "All-files diff"),
-        Binding("w", "toggle_wrap", "Wrap"),
         Binding("f", "toggle_follow", "Follow latest"),
         Binding("t", "cycle_theme", "Theme"),
         Binding("v", "toggle_view_mode", "List/Tree"),
@@ -236,7 +230,6 @@ class HerdrDiffApp(App):
         self._snapshot: Optional[git_watch.RepoSnapshot] = None
         self._selected_index = 0
         self._cumulative = False
-        self._wrap = False
         self._follow = True
         # The index we ourselves last set programmatically (follow-mode
         # auto-jump, reload re-sync, 'f' re-enable). A Highlighted/
@@ -378,14 +371,13 @@ class HerdrDiffApp(App):
         theme = DARK_THEMES[self._theme_index]
         if self._cumulative:
             text = git_watch.cumulative_diff(self._snapshot.root)
-            diff_pane.show_diff(text, hint_filename=None, wrap=self._wrap, theme=theme)
+            diff_pane.show_diff(text, hint_filename=None, theme=theme)
         elif self._snapshot.files:
             f = self._snapshot.files[self._selected_index]
             text = git_watch.diff_for_file(self._snapshot.root, f)
-            diff_pane.show_diff(text, hint_filename=f.path, wrap=self._wrap, theme=theme)
+            diff_pane.show_diff(text, hint_filename=f.path, theme=theme)
         else:
-            diff_pane.show_diff("", hint_filename=None, wrap=self._wrap, theme=theme)
-        header.wrap_label = "wrap: on" if self._wrap else "wrap: off"
+            diff_pane.show_diff("", hint_filename=None, theme=theme)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         """Fires for both keyboard nav, mouse clicks, and our own programmatic
@@ -482,10 +474,6 @@ class HerdrDiffApp(App):
 
     def action_toggle_cumulative(self) -> None:
         self._cumulative = not self._cumulative
-        self._render_diff()
-
-    def action_toggle_wrap(self) -> None:
-        self._wrap = not self._wrap
         self._render_diff()
 
     def action_toggle_follow(self) -> None:

@@ -125,7 +125,7 @@ def _gutter_prefix_width(width: int) -> int:
 def render_diff(
     diff_text: str,
     hint_filename: str | None = None,
-    wrap: bool = False,
+    wrap: bool = True,
     theme: str = "ansi_dark",
 ) -> Text:
     """Build a Rich Text with an old/new line-number gutter plus per-line
@@ -134,9 +134,10 @@ def render_diff(
     hint_filename lets the caller force a lexer (e.g. the selected file's
     name) instead of relying on the `+++ b/...` line inside the diff text,
     which matters for untracked-file pseudo-diffs where every line is `+`.
-    wrap controls whether long lines soft-wrap (True) or extend past the
-    viewport for horizontal scrolling (False, the default — matches how a
-    terminal diff normally reads).
+    wrap controls whether long lines soft-wrap onto the next row (True, the
+    default — the app always renders this way so nothing needs horizontal
+    scrolling) or extend past the viewport (False, for callers/tests that
+    want the old un-wrapped behavior).
     """
     if not diff_text.strip():
         return Text("(no diff)", style="dim italic")
