@@ -296,38 +296,59 @@ def branch_file_list(root: Path, base_ref: str) -> list[FileChange]:
     )
 
 
+def _merge_base(root: Path, base_ref: str) -> Optional[str]:
+    try:
+        return _run(["merge-base", base_ref, "HEAD"], cwd=root).strip()
+    except NotAGitRepo:
+        return None
+
+
 def branch_diff_for_file(root: Path, base_ref: str, change: FileChange) -> str:
     """Diff for one file across the whole branch vs base_ref: every commit
-    since diverging, plus any uncommitted change on top. Untracked and
-    binary/oversized files are handled the same way diff_for_file() does.
+    since diverging, PLUS any uncommitted change on top, as one clean diff.
+
+    Diffs straight against the merge-base commit (working tree vs
+    merge-base) rather than `base_ref...HEAD` (which only covers committed
+    history and silently drops uncommitted edits) or naively concatenating
+    two separate diffs for the same file (which would produce a broken
+    double-hunk result). Untracked and binary/oversized files are handled
+    the same way diff_for_file() does.
     """
     reason = skip_reason(root, change)
     if reason is not None:
         return f"({reason})"
     if change.status == "??":
         return diff_for_file(root, change)
+    base_commit = _merge_base(root, base_ref)
+    if base_commit is None:
+        return f"(could not find a merge base with {base_ref})"
     try:
-        return _run(["diff", f"{base_ref}...HEAD", "--", change.path], cwd=root)
+        return _run(["diff", base_commit, "--", change.path], cwd=root)
     except NotAGitRepo as exc:
         return f"(diff failed for {change.path}: {exc})"
 
 
 def branch_diff(root: Path, base_ref: str) -> str:
-    """Whole-branch cumulative diff: working tree + all commits on HEAD
-    since it diverged from base_ref, i.e. what a PR against base_ref would
-    show, as one combined text (used by the 'all files' toggle in branch
-    mode; per-file review uses branch_diff_for_file() instead, which keeps
-    filenames for syntax highlighting).
+    """Whole-branch cumulative diff: every commit on HEAD since it diverged
+    from base_ref PLUS any uncommitted changes on top, i.e. what a PR
+    against base_ref would show right now, as one combined text (used by
+    the 'all files' toggle in branch mode; per-file review uses
+    branch_diff_for_file() instead, which keeps filenames for syntax
+    highlighting).
+
+    Diffs straight against the merge-base commit rather than concatenating
+    `base_ref...HEAD` (committed history only) with a separate `diff HEAD`
+    (uncommitted only) — for any file touched on both sides that produced
+    two disjointed hunks per file instead of one coherent final diff.
     """
+    base_commit = _merge_base(root, base_ref)
+    if base_commit is None:
+        return f"(could not find a merge base with {base_ref})"
     try:
-        merge_base_diff = _run(["diff", f"{base_ref}...HEAD"], cwd=root)
+        merge_base_diff = _run(["diff", base_commit], cwd=root)
     except NotAGitRepo as exc:
         return f"(could not diff against {base_ref}: {exc})"
-    try:
-        working_diff = _run(["diff", "HEAD"], cwd=root)
-    except NotAGitRepo:
-        working_diff = ""
-    parts = [p for p in (merge_base_diff, working_diff) if p.strip()]
+    parts = [merge_base_diff] if merge_base_diff.strip() else []
     snap = snapshot(root)
     for f in snap.files:
         if f.status == "??":
