@@ -13,6 +13,7 @@ dependencies = [
     "textual>=0.58",
     "rich>=13.7",
     "watchdog>=4.0",
+    "pygments>=2.17",
 ]
 
 [project.scripts]

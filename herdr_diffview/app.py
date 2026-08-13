@@ -5,15 +5,15 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from rich.syntax import Syntax
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Vertical
 from textual.reactive import reactive
 from textual.widgets import Footer, ListItem, ListView, Static
 
 from . import git_watch, herdr_client
+from .diff_render import render_diff
 from .fswatch import DirWatcher
 from .herdr_events import AgentStatusSubscriber
 
@@ -51,12 +51,8 @@ class FilePane(ListView):
 
 
 class DiffPane(Static):
-    def show_diff(self, text: str) -> None:
-        if not text.strip():
-            self.update(Text("(no diff)", style="dim italic"))
-            return
-        syntax = Syntax(text, "diff", theme="ansi_dark", word_wrap=False)
-        self.update(syntax)
+    def show_diff(self, text: str, hint_filename: str | None = None) -> None:
+        self.update(render_diff(text, hint_filename))
 
 
 class BannerPane(Static):
@@ -66,11 +62,16 @@ class BannerPane(Static):
 class HerdrDiffApp(App):
     CSS = """
     Screen { layout: vertical; }
-    HeaderBar { height: 1; background: $panel; }
-    #body { height: 1fr; }
-    FilePane { width: 32; border-right: solid $accent; }
-    DiffPane { width: 1fr; padding: 0 1; overflow-y: auto; overflow-x: auto; }
-    BannerPane { height: 3; background: $error 20%; color: $error; padding: 1; }
+    HeaderBar { height: 1; background: $panel; dock: top; }
+    BannerPane { height: 3; background: $error 20%; color: $error; padding: 1; dock: top; }
+    #body { height: 1fr; layout: vertical; }
+    FilePane {
+        height: 30%;
+        min-height: 5;
+        max-height: 15;
+        border-bottom: solid $accent;
+    }
+    DiffPane { height: 1fr; padding: 0 1; overflow-y: auto; overflow-x: auto; }
     """
 
     BINDINGS = [
@@ -96,9 +97,8 @@ class HerdrDiffApp(App):
 
     def compose(self) -> ComposeResult:
         yield HeaderBar(id="header")
-        with Vertical():
-            yield BannerPane(id="banner")
-        with Horizontal(id="body"):
+        yield BannerPane(id="banner")
+        with Vertical(id="body"):
             yield FilePane(id="files")
             yield DiffPane(id="diff")
         yield Footer()
@@ -168,12 +168,24 @@ class HerdrDiffApp(App):
             return
         if self._cumulative:
             text = git_watch.cumulative_diff(self._snapshot.root)
+            diff_pane.show_diff(text, hint_filename=None)
         elif self._snapshot.files:
             f = self._snapshot.files[self._selected_index]
             text = git_watch.diff_for_file(self._snapshot.root, f)
+            diff_pane.show_diff(text, hint_filename=f.path)
         else:
-            text = ""
-        diff_pane.show_diff(text)
+            diff_pane.show_diff("", hint_filename=None)
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        """Fires for both keyboard nav and mouse clicks in the file list."""
+        if event.list_view.id != "files" or not self._snapshot or not self._snapshot.files:
+            return
+        index = event.list_view.index
+        if index is None:
+            return
+        self._selected_index = index
+        if not self._cumulative:
+            self._render_diff()
 
     # -- agent status -------------------------------------------------------
 
@@ -214,18 +226,15 @@ class HerdrDiffApp(App):
     def action_cursor_down(self) -> None:
         if not self._snapshot or not self._snapshot.files:
             return
-        self._selected_index = min(
-            self._selected_index + 1, len(self._snapshot.files) - 1
-        )
-        self.query_one("#files", FilePane).index = self._selected_index
-        self._render_diff()
+        new_index = min(self._selected_index + 1, len(self._snapshot.files) - 1)
+        # Setting .index fires ListView.Highlighted, which re-renders the diff.
+        self.query_one("#files", FilePane).index = new_index
 
     def action_cursor_up(self) -> None:
-        if not self._snapshot:
+        if not self._snapshot or not self._snapshot.files:
             return
-        self._selected_index = max(self._selected_index - 1, 0)
-        self.query_one("#files", FilePane).index = self._selected_index
-        self._render_diff()
+        new_index = max(self._selected_index - 1, 0)
+        self.query_one("#files", FilePane).index = new_index
 
     def action_toggle_cumulative(self) -> None:
         self._cumulative = not self._cumulative
