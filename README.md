@@ -72,6 +72,12 @@ herdr-diffview --path ~/repo   # watch an explicit directory, skip Herdr lookup
 The header also shows a running `<N> files +<adds> -<dels>` diffstat for the
 full working tree, independent of which file is selected.
 
+The diff pane shows an old/new line-number gutter (like GitHub's side-by-side
+numbers, condensed into unified-diff form) alongside the syntax highlighting.
+Binary files and anything over ~1.5MB are skipped with a one-line summary
+instead of being rendered — no megabytes of binary noise or giant lockfiles
+flooding the pane.
+
 ## How it works
 
 - **Change detection**: a `watchdog` (inotify) observer on the target

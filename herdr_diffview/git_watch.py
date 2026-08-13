@@ -11,6 +11,26 @@ class NotAGitRepo(RuntimeError):
     pass
 
 
+# Files at or above this size, or detected as binary, get a summary line
+# instead of a rendered diff — a multi-MB lockfile or a binary asset dumped
+# into the pane is noise, not something worth syntax-highlighting line by
+# line.
+MAX_DIFF_BYTES = 1_500_000
+
+
+def _human_size(num_bytes: int) -> str:
+    size = float(num_bytes)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f}{unit}" if unit == "B" else f"{size:.1f}{unit}"
+        size /= 1024
+    return f"{size:.1f}GB"
+
+
+def _looks_binary(sample: bytes) -> bool:
+    return b"\x00" in sample
+
+
 @dataclass
 class FileChange:
     path: str
@@ -136,9 +156,38 @@ def snapshot(path: Path) -> RepoSnapshot:
     return RepoSnapshot(root=root, branch=branch, files=files)
 
 
+def skip_reason(root: Path, change: FileChange) -> Optional[str]:
+    """Return a human-readable reason to skip rendering this file's diff
+    (binary content, or too large), or None if it should render normally.
+
+    Deleted files have nothing on disk to sample — always let those through
+    to git's own diff machinery, which handles them fine either way.
+    """
+    if change.status == "D":
+        return None
+    path = root / change.path
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return None
+    if size > MAX_DIFF_BYTES:
+        return f"binary or large file skipped ({_human_size(size)})"
+    try:
+        with open(path, "rb") as fh:
+            sample = fh.read(8192)
+    except OSError:
+        return None
+    if _looks_binary(sample):
+        return f"binary file skipped ({_human_size(size)})"
+    return None
+
+
 def diff_for_file(root: Path, change: FileChange) -> str:
     """Unified diff text for one file, handling untracked files specially
     (git diff shows nothing for them by default)."""
+    reason = skip_reason(root, change)
+    if reason is not None:
+        return f"({reason})"
     if change.status == "??":
         try:
             content = (root / change.path).read_text(errors="replace")
@@ -167,6 +216,9 @@ def diff_for_file(root: Path, change: FileChange) -> str:
 
 
 def cumulative_diff(root: Path) -> str:
+    # Tracked binary files are already summarized by git itself ("Binary
+    # files a/x and b/x differ") inside `git diff HEAD`, so only untracked
+    # files need our own skip_reason() guard here.
     try:
         head_diff = _run(["diff", "HEAD"], cwd=root)
     except NotAGitRepo:
@@ -176,4 +228,15 @@ def cumulative_diff(root: Path) -> str:
     for f in snap.files:
         if f.status == "??":
             parts.append(diff_for_file(root, f))
-    return "\n".join(p for p in parts if p.strip())
+    combined = "\n".join(p for p in parts if p.strip())
+    if len(combined) > MAX_DIFF_BYTES:
+        # Safety net for the one case skip_reason() can't cover per-file:
+        # a single huge *tracked* text file dumped whole inside `git diff
+        # HEAD`'s combined output (binary tracked files are already
+        # summarized by git itself before this point).
+        combined = (
+            combined[:MAX_DIFF_BYTES]
+            + f"\n\n... (truncated, cumulative diff exceeds "
+            f"{_human_size(MAX_DIFF_BYTES)} — view files individually instead)"
+        )
+    return combined
