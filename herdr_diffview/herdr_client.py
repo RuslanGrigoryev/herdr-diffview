@@ -141,6 +141,36 @@ def current_pane_id() -> Optional[str]:
     return os.environ.get("HERDR_PANE_ID")
 
 
+def report_metadata(
+    pane_id: str,
+    source: str,
+    token: dict[str, str],
+    ttl_ms: Optional[int] = None,
+) -> None:
+    """Push a display-only token onto a pane via `herdr pane report-metadata`
+    (e.g. so herdr's own sidebar can render $diff for this pane). Best-effort
+    — herdr not running, an unsupported version, or a transient CLI failure
+    should never interrupt watching, so callers should treat exceptions as
+    non-fatal (this raises HerdrError rather than swallowing it, so callers
+    can choose to log/ignore).
+    """
+    binary = herdr_binary()
+    args = [binary, "pane", "report-metadata", pane_id, "--source", source]
+    for name, value in token.items():
+        args += ["--token", f"{name}={value}"]
+    if ttl_ms is not None:
+        args += ["--ttl-ms", str(ttl_ms)]
+    try:
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=5)
+    except subprocess.TimeoutExpired as exc:
+        raise HerdrError("herdr pane report-metadata timed out") from exc
+    if proc.returncode != 0:
+        raise HerdrError(
+            f"herdr pane report-metadata failed (exit {proc.returncode}): "
+            f"{proc.stderr.strip() or proc.stdout.strip()}"
+        )
+
+
 def find_agent_pane(workspace_id: Optional[str] = None) -> Optional[PaneInfo]:
     """Best-effort pick of "the agent pane to watch" in the current workspace.
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -11,11 +12,11 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical, VerticalScroll
 from textual.reactive import reactive
-from textual.widgets import Footer, ListItem, ListView, Static, Tree
+from textual.widgets import Footer, Input, ListItem, ListView, Static, Tree
 from textual.widgets.tree import TreeNode
 
 from . import git_watch, herdr_client
-from .diff_render import DARK_THEMES, render_diff
+from .diff_render import DARK_THEMES, RenderedDiff, render_diff
 from .fswatch import DirWatcher
 from .herdr_events import AgentStatusSubscriber
 
@@ -173,13 +174,18 @@ class DiffContent(Static):
     live inside a scrolling container (DiffPane) to be viewable past one
     screen, since Static itself never clips or scrolls on its own."""
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self.rendered: Optional[RenderedDiff] = None
+
     def show_diff(
         self,
         text: str,
         hint_filename: str | None = None,
         theme: str = "ansi_dark",
     ) -> None:
-        self.update(render_diff(text, hint_filename, wrap=True, theme=theme))
+        self.rendered = render_diff(text, hint_filename, wrap=True, theme=theme)
+        self.update(self.rendered.text)
 
 
 class DiffPane(VerticalScroll):
@@ -195,9 +201,27 @@ class DiffPane(VerticalScroll):
         self.query_one("#diff-content", DiffContent).show_diff(*args, **kwargs)
         self.scroll_home(animate=False)
 
+    @property
+    def rendered(self) -> Optional[RenderedDiff]:
+        return self.query_one("#diff-content", DiffContent).rendered
+
+    def scroll_to_line(self, line: int, animate: bool = True) -> None:
+        """Scroll so the given 0-indexed logical line is visible near the
+        top. Approximate under word-wrap (a logical line can span more than
+        one visual row), close enough for jump-to-hunk/search since it's
+        always at-or-before the true position, never past it."""
+        self.scroll_to(y=max(0, line - 1), animate=animate)
+
 
 class BannerPane(Static):
     """Shown when watching has ended (dir gone / pane closed)."""
+
+
+class SearchBar(Input):
+    """Docked search input for the diff pane, shown on '/' and hidden again
+    on Escape or Enter. A plain substring search over the diff's own text,
+    not a full editor-grade search — good enough for jumping to a symbol or
+    line in a diff that's grown too long to scan by eye."""
 
 
 _UNSET = object()
@@ -218,6 +242,7 @@ class HerdrDiffApp(App):
     }
     DiffPane { height: 1fr; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
     DiffContent { width: 100%; padding: 0 1; }
+    SearchBar { dock: bottom; display: none; }
     """
 
     BINDINGS = [
@@ -234,6 +259,10 @@ class HerdrDiffApp(App):
         Binding("pagedown", "diff_page_down", "Diff PgDn", show=False),
         Binding("home", "diff_scroll_home", "Diff Home", show=False),
         Binding("end", "diff_scroll_end", "Diff End", show=False),
+        Binding("n", "next_hunk", "Next hunk"),
+        Binding("N", "prev_hunk", "Prev hunk", show=False),
+        Binding("slash", "open_search", "Search"),
+        Binding("escape", "close_search", "Close search", show=False),
         Binding("r", "refresh_now", "Refresh"),
         Binding("q", "quit", "Quit"),
     ]
@@ -249,6 +278,7 @@ class HerdrDiffApp(App):
         # displayed set/markers can skip the clear()+rebuild that would
         # otherwise flicker every file row on every debounced fs event.
         self._file_list_signature: tuple = ()
+        self._last_pushed_diff_token: Optional[str] = None
         self._cumulative = False
         self._base_branch_diff = False
         self._base_branch: Optional[str] = None
@@ -269,6 +299,9 @@ class HerdrDiffApp(App):
         self._watcher: Optional[DirWatcher] = None
         self._subscriber: Optional[AgentStatusSubscriber] = None
         self._ended = False
+        self._search_matches: list[int] = []
+        self._search_index = -1
+        self._search_query = ""
 
     def compose(self) -> ComposeResult:
         yield HeaderBar(id="header")
@@ -277,6 +310,7 @@ class HerdrDiffApp(App):
             yield FilePane(id="files")
             yield FileTreePane(id="file-tree")
             yield DiffPane(id="diff")
+        yield SearchBar(id="search", placeholder="search diff… (Enter: next, Esc: close)")
         yield Footer()
 
     def on_mount(self) -> None:
@@ -321,11 +355,39 @@ class HerdrDiffApp(App):
         header = self.query_one("#header", HeaderBar)
         header.repo_label = snap.root.name
         header.branch_label = snap.branch
-        header.stat_label = git_watch.diffstat_from_text(
-            git_watch.cumulative_diff(snap.root)
-        ).render()
+        stat = git_watch.diffstat_from_text(git_watch.cumulative_diff(snap.root))
+        header.stat_label = stat.render()
+        self._push_diff_metadata(stat)
         self._render_file_list(changed_paths)
         self._render_diff()
+
+    def _push_diff_metadata(self, stat: git_watch.DiffStat) -> None:
+        """Best-effort: surface the current diffstat as a $diff token on the
+        watched Herdr pane, so herdr's own sidebar can show e.g. '+340 -12'
+        without this pane needing to be open/focused. Runs off the UI thread
+        since it shells out to the herdr CLI; failures are swallowed — this
+        is a nice-to-have, never something that should interrupt watching.
+        """
+        if not self._pane_id or not herdr_client.in_herdr_pane():
+            return
+        value = stat.render() or "clean"
+        if value == self._last_pushed_diff_token:
+            return
+        self._last_pushed_diff_token = value
+        pane_id = self._pane_id
+
+        def push() -> None:
+            try:
+                herdr_client.report_metadata(
+                    pane_id,
+                    source="herdr-diffview",
+                    token={"diff": value},
+                    ttl_ms=None,
+                )
+            except herdr_client.HerdrError:
+                pass
+
+        threading.Thread(target=push, daemon=True).start()
 
     def _active_files(self) -> list[git_watch.FileChange]:
         if self._base_branch_diff:
@@ -676,6 +738,71 @@ class HerdrDiffApp(App):
 
     def action_diff_scroll_end(self) -> None:
         self.query_one("#diff", DiffPane).scroll_end()
+
+    def action_next_hunk(self) -> None:
+        self._jump_hunk(1)
+
+    def action_prev_hunk(self) -> None:
+        self._jump_hunk(-1)
+
+    def _jump_hunk(self, direction: int) -> None:
+        diff_pane = self.query_one("#diff", DiffPane)
+        rendered = diff_pane.rendered
+        if not rendered or not rendered.hunk_lines:
+            return
+        current_line = int(diff_pane.scroll_y) + 1
+        hunks = rendered.hunk_lines
+        if direction > 0:
+            target = next((h for h in hunks if h > current_line), hunks[0])
+        else:
+            target = next((h for h in reversed(hunks) if h < current_line), hunks[-1])
+        diff_pane.scroll_to_line(target)
+
+    def action_open_search(self) -> None:
+        search = self.query_one("#search", SearchBar)
+        search.display = True
+        search.value = self._search_query
+        search.focus()
+
+    def action_close_search(self) -> None:
+        search = self.query_one("#search", SearchBar)
+        if search.display:
+            search.display = False
+            self.query_one("#diff", DiffPane).focus()
+            return
+        # Escape with the search bar already closed: no-op (lets Escape fall
+        # through harmlessly rather than binding-erroring elsewhere).
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id != "search":
+            return
+        query = event.value.strip()
+        if not query:
+            return
+        if query != self._search_query:
+            self._search_query = query
+            self._recompute_search_matches()
+            self._search_index = -1
+        self._jump_search(1)
+
+    def _recompute_search_matches(self) -> None:
+        diff_pane = self.query_one("#diff", DiffPane)
+        rendered = diff_pane.rendered
+        self._search_matches = []
+        if not rendered or not self._search_query:
+            return
+        needle = self._search_query.lower()
+        self._search_matches = [
+            i for i, line in enumerate(rendered.lines) if needle in line.lower()
+        ]
+
+    def _jump_search(self, direction: int) -> None:
+        if not self._search_matches:
+            self._flash_banner(f"No matches for '{self._search_query}'.")
+            return
+        self._search_index = (self._search_index + direction) % len(self._search_matches)
+        line = self._search_matches[self._search_index]
+        self.query_one("#diff", DiffPane).scroll_to_line(line)
 
     def action_refresh_now(self) -> None:
         self._reload()

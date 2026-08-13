@@ -12,6 +12,7 @@ internals, so this stays stable across Rich/Textual versions.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 
 from pygments.lexers import get_lexer_by_name, get_lexer_for_filename
 from pygments.util import ClassNotFound
@@ -56,6 +57,20 @@ DARK_THEMES = [
 ]
 
 _theme_cache: dict[str, object] = {}
+
+
+@dataclass
+class RenderedDiff:
+    """A rendered diff plus metadata Text's __slots__ can't carry directly:
+    the 0-indexed line number of each hunk header, for jump-to-hunk
+    navigation, and each line's plain text, for search."""
+
+    text: Text
+    hunk_lines: list[int] = field(default_factory=list)
+
+    @property
+    def lines(self) -> list[str]:
+        return self.text.plain.split("\n")
 
 
 def get_theme(name: str):
@@ -127,9 +142,9 @@ def render_diff(
     hint_filename: str | None = None,
     wrap: bool = True,
     theme: str = "ansi_dark",
-) -> Text:
+) -> RenderedDiff:
     """Build a Rich Text with an old/new line-number gutter plus per-line
-    syntax + diff coloring.
+    syntax + diff coloring, plus hunk-position metadata for navigation.
 
     hint_filename lets the caller force a lexer (e.g. the selected file's
     name) instead of relying on the `+++ b/...` line inside the diff text,
@@ -138,18 +153,28 @@ def render_diff(
     default — the app always renders this way so nothing needs horizontal
     scrolling) or extend past the viewport (False, for callers/tests that
     want the old un-wrapped behavior).
+
+    RenderedDiff.hunk_lines is a list of 0-indexed line numbers (into
+    RenderedDiff.lines) where each hunk header starts, for 'jump to next/
+    previous hunk' navigation. Line-based, not visual-row-based — with
+    word-wrap on, a wrapped hunk can land a little further down than this on
+    screen, but never before it, so repeated jumps still converge correctly.
     """
     if not diff_text.strip():
-        return Text("(no diff)", style="dim italic")
+        return RenderedDiff(text=Text("(no diff)", style="dim italic"))
     if diff_text.startswith("(") and diff_text.rstrip().endswith(")") and "\n" not in diff_text.strip():
         # skip_reason()'s one-line "(binary file skipped ...)" placeholders.
-        return Text(diff_text, style="dim italic")
+        return RenderedDiff(text=Text(diff_text, style="dim italic"))
 
     lexer_name = _lexer_name_for_filename(hint_filename) if hint_filename else "text"
     out = Text()
+    hunk_lines: list[int] = []
     lines = diff_text.splitlines()
     width = _gutter_width(diff_text)
     old_no = new_no = 0
+
+    def _current_line_no() -> int:
+        return out.plain.count("\n")
 
     for i, line in enumerate(lines):
         newline = "\n" if i < len(lines) - 1 else ""
@@ -177,6 +202,7 @@ def render_diff(
             # the diff) so separate hunks don't visually run together.
             if out.plain:
                 out.append("\n")
+            hunk_lines.append(_current_line_no())
             out.append(" " * prefix_width)
             out.append(line + newline, style=HUNK_STYLE)
             continue
@@ -215,4 +241,4 @@ def render_diff(
 
     out.no_wrap = not wrap
     out.overflow = "fold" if wrap else "ignore"
-    return out
+    return RenderedDiff(text=out, hunk_lines=hunk_lines)
