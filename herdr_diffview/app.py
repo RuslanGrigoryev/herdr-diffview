@@ -15,6 +15,7 @@ from textual.reactive import reactive
 from textual.widgets import Footer, Input, ListItem, ListView, Static, Tree
 from textual.widgets.tree import TreeNode
 
+from . import config as config_module
 from . import git_watch, herdr_client
 from .diff_render import DARK_THEMES, RenderedDiff, render_diff
 from .fswatch import DirWatcher
@@ -235,9 +236,7 @@ class HerdrDiffApp(App):
     BannerPane { height: 3; background: $error 20%; color: $error; padding: 1; dock: top; }
     #body { height: 1fr; layout: vertical; }
     FilePane, FileTreePane {
-        height: 30%;
         min-height: 5;
-        max-height: 15;
         border-bottom: solid $accent;
     }
     DiffPane { height: 1fr; overflow-y: auto; overflow-x: hidden; scrollbar-gutter: stable; }
@@ -261,6 +260,8 @@ class HerdrDiffApp(App):
         Binding("end", "diff_scroll_end", "Diff End", show=False),
         Binding("n", "next_hunk", "Next hunk"),
         Binding("N", "prev_hunk", "Prev hunk", show=False),
+        Binding("plus", "grow_file_panel", "Grow files panel", show=False),
+        Binding("minus", "shrink_file_panel", "Shrink files panel", show=False),
         Binding("slash", "open_search", "Search"),
         Binding("escape", "close_search", "Close search", show=False),
         Binding("r", "refresh_now", "Refresh"),
@@ -283,7 +284,6 @@ class HerdrDiffApp(App):
         self._base_branch_diff = False
         self._base_branch: Optional[str] = None
         self._branch_files: list[git_watch.FileChange] = []
-        self._follow = True
         # The index we ourselves last set programmatically (follow-mode
         # auto-jump, reload re-sync, 'f' re-enable). A Highlighted/
         # NodeHighlighted event is only treated as a real user click when its
@@ -294,14 +294,17 @@ class HerdrDiffApp(App):
         # handlers read live widget state rather than a per-event snapshot,
         # so every one of them would carry the same final index anyway.
         self._expected_index: Optional[int] = self._UNSET
-        self._theme_index = 0
-        self._view_mode = "list"  # "list" or "tree"
         self._watcher: Optional[DirWatcher] = None
         self._subscriber: Optional[AgentStatusSubscriber] = None
         self._ended = False
         self._search_matches: list[int] = []
         self._search_index = -1
         self._search_query = ""
+        self._config = config_module.Config.load(len(DARK_THEMES))
+        self._theme_index = self._config.theme_index
+        self._follow = self._config.follow
+        self._view_mode = self._config.view_mode  # "list" or "tree"
+        self._file_panel_height = self._config.file_panel_height
 
     def compose(self) -> ComposeResult:
         yield HeaderBar(id="header")
@@ -316,6 +319,7 @@ class HerdrDiffApp(App):
     def on_mount(self) -> None:
         self.query_one("#banner", BannerPane).display = False
         self.query_one("#file-tree", FileTreePane).display = False
+        self._apply_file_panel_height()
         self._update_follow_label()
         self._update_theme_label()
         self._update_diff_mode_label()
@@ -667,6 +671,7 @@ class HerdrDiffApp(App):
     def action_toggle_follow(self) -> None:
         self._follow = not self._follow
         self._update_follow_label()
+        self._save_config()
         if self._follow and not self._base_branch_diff and self._active_files():
             # Jump to the most recently modified file on disk right away,
             # rather than waiting for the next fs event. (Only meaningful
@@ -708,6 +713,7 @@ class HerdrDiffApp(App):
         self._theme_index = (self._theme_index + 1) % len(DARK_THEMES)
         self._update_theme_label()
         self._render_diff()
+        self._save_config()
 
     def _update_theme_label(self) -> None:
         header = self.query_one("#header", HeaderBar)
@@ -716,6 +722,33 @@ class HerdrDiffApp(App):
     def action_toggle_view_mode(self) -> None:
         self._view_mode = "tree" if self._view_mode == "list" else "list"
         self._update_view_mode_visibility()
+        self._save_config()
+
+    def action_grow_file_panel(self) -> None:
+        self._resize_file_panel(+5)
+
+    def action_shrink_file_panel(self) -> None:
+        self._resize_file_panel(-5)
+
+    def _resize_file_panel(self, delta: int) -> None:
+        self._file_panel_height = max(
+            config_module.MIN_FILE_PANEL_HEIGHT,
+            min(config_module.MAX_FILE_PANEL_HEIGHT, self._file_panel_height + delta),
+        )
+        self._apply_file_panel_height()
+        self._save_config()
+
+    def _apply_file_panel_height(self) -> None:
+        height = f"{self._file_panel_height}%"
+        self.query_one("#files", FilePane).styles.height = height
+        self.query_one("#file-tree", FileTreePane).styles.height = height
+
+    def _save_config(self) -> None:
+        self._config.theme_index = self._theme_index
+        self._config.follow = self._follow
+        self._config.view_mode = self._view_mode
+        self._config.file_panel_height = self._file_panel_height
+        self._config.save()
 
     def _update_view_mode_visibility(self) -> None:
         file_list = self.query_one("#files", FilePane)

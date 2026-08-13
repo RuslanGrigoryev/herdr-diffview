@@ -71,9 +71,15 @@ herdr-diffview --path ~/repo   # watch an explicit directory, skip Herdr lookup
 | `t`       | cycle syntax theme (monokai, dracula, github-dark, one-dark, nord, gruvbox-dark, night-owl, solarized-dark, zenburn, material, inkpot, paraiso-dark, stata-dark, plus the ANSI-safe default) |
 | `n` / `N` | jump to next / previous hunk in the current diff |
 | `/`       | open a search box; type and press Enter to jump to the next matching line, Enter again for the next match, Esc to close |
+| `+` / `-` | grow / shrink the file list/tree panel (15–70%)  |
 | `PageUp`/`PageDown`/`Home`/`End`, mouse wheel | scroll the diff pane |
 | `r`       | force refresh                                   |
 | `q`       | quit                                            |
+
+Your theme, follow-on-by-default, list/tree view, and panel-size choices
+persist across launches in `~/.config/herdr-diffview/config.json`
+(`$XDG_CONFIG_HOME/herdr-diffview/config.json` if set). Delete that file (or
+just ignore it) to go back to the defaults.
 
 The header also shows a running `<N> files +<adds> -<dels>` diffstat for the
 full working tree, independent of which file is selected. The same figure is
