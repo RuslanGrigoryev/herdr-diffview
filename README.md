@@ -66,6 +66,7 @@ herdr-diffview --path ~/repo   # watch an explicit directory, skip Herdr lookup
 | `a`       | toggle cumulative diff (all files) vs single file |
 | `w`       | toggle long-line wrap vs. horizontal scroll     |
 | `f`       | toggle "follow latest changed file" (on by default; clicking/navigating turns it off until pressed again) |
+| `t`       | cycle syntax theme (monokai, dracula, github-dark, one-dark, nord, gruvbox-dark, night-owl, solarized-dark, zenburn, material, inkpot, paraiso-dark, stata-dark, plus the ANSI-safe default) |
 | `r`       | force refresh                                   |
 | `q`       | quit                                            |
 

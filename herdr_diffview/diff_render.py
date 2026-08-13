@@ -28,8 +28,46 @@ GUTTER_STYLE = Style(color="grey42")
 GUTTER_ADDED_STYLE = Style(color="green")
 GUTTER_REMOVED_STYLE = Style(color="red")
 
-_THEME = Syntax.get_theme("ansi_dark")
 _HUNK_HEADER_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
+
+# Curated dark Pygments styles, cycled with the app's 't' key. 'ansi_dark' is
+# Rich's own 16-color-safe default (works in any terminal, even one with a
+# limited palette); the rest are real Pygments styles that use full 24-bit
+# color and generally look closer to editor themes people already know.
+DARK_THEMES = [
+    "ansi_dark",
+    "monokai",
+    "dracula",
+    "github-dark",
+    "one-dark",
+    "nord",
+    "gruvbox-dark",
+    "night-owl",
+    "solarized-dark",
+    "zenburn",
+    "material",
+    "inkpot",
+    "paraiso-dark",
+    "stata-dark",
+]
+
+_theme_cache: dict[str, object] = {}
+
+
+def get_theme(name: str):
+    """Cached Syntax theme lookup — building a PygmentsSyntaxTheme parses and
+    walks the whole style's token table, not free to redo every render."""
+    theme = _theme_cache.get(name)
+    if theme is None:
+        try:
+            theme = Syntax.get_theme(name)
+        except Exception:
+            # Unknown style name (e.g. a Pygments version that dropped it) —
+            # fall back to Rich's own always-available ANSI theme rather
+            # than crashing the render.
+            theme = Syntax.get_theme("ansi_dark")
+        _theme_cache[name] = theme
+    return theme
 
 
 def _lexer_name_for_filename(filename: str) -> str:
@@ -39,19 +77,20 @@ def _lexer_name_for_filename(filename: str) -> str:
         return "text"
 
 
-def _highlight_line(code: str, lexer_name: str) -> Text:
+def _highlight_line(code: str, lexer_name: str, theme_name: str) -> Text:
     if not code or lexer_name == "text":
         return Text(code)
     try:
         lexer = get_lexer_by_name(lexer_name, stripnl=False)
     except ClassNotFound:
         return Text(code)
+    theme = get_theme(theme_name)
     text = Text()
     try:
         for token_type, value in lexer.get_tokens(code):
             if value == "":
                 continue
-            style = _THEME.get_style_for_token(token_type)
+            style = theme.get_style_for_token(token_type)
             text.append(value, style=style)
     except Exception:
         return Text(code)
@@ -77,6 +116,7 @@ def render_diff(
     diff_text: str,
     hint_filename: str | None = None,
     wrap: bool = False,
+    theme: str = "ansi_dark",
 ) -> Text:
     """Build a Rich Text with an old/new line-number gutter plus per-line
     syntax + diff coloring.
@@ -146,7 +186,7 @@ def render_diff(
         out.append(new_str.rjust(width), style=gutter_style)
         out.append(" ")
 
-        code_text = _highlight_line(code, lexer_name)
+        code_text = _highlight_line(code, lexer_name, theme)
         if bg is not None:
             code_text.stylize(bg)
             out.append(prefix, style=bg)

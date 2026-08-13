@@ -13,7 +13,7 @@ from textual.reactive import reactive
 from textual.widgets import Footer, ListItem, ListView, Static
 
 from . import git_watch, herdr_client
-from .diff_render import render_diff
+from .diff_render import DARK_THEMES, render_diff
 from .fswatch import DirWatcher
 from .herdr_events import AgentStatusSubscriber
 
@@ -34,6 +34,7 @@ class HeaderBar(Static):
     stat_label: reactive[str] = reactive("")
     wrap_label: reactive[str] = reactive("")
     follow_label: reactive[str] = reactive("")
+    theme_label: reactive[str] = reactive("")
 
     def render(self) -> Text:
         t = Text()
@@ -55,6 +56,9 @@ class HeaderBar(Static):
         if self.follow_label:
             t.append("   ", style="dim")
             t.append(self.follow_label, style="green" if "on" in self.follow_label else "dim")
+        if self.theme_label:
+            t.append("   ", style="dim")
+            t.append(self.theme_label, style="dim")
         return t
 
 
@@ -64,9 +68,13 @@ class FilePane(ListView):
 
 class DiffPane(Static):
     def show_diff(
-        self, text: str, hint_filename: str | None = None, wrap: bool = False
+        self,
+        text: str,
+        hint_filename: str | None = None,
+        wrap: bool = False,
+        theme: str = "ansi_dark",
     ) -> None:
-        self.update(render_diff(text, hint_filename, wrap=wrap))
+        self.update(render_diff(text, hint_filename, wrap=wrap, theme=theme))
 
 
 class BannerPane(Static):
@@ -96,6 +104,7 @@ class HerdrDiffApp(App):
         Binding("a", "toggle_cumulative", "All-files diff"),
         Binding("w", "toggle_wrap", "Wrap"),
         Binding("f", "toggle_follow", "Follow latest"),
+        Binding("t", "cycle_theme", "Theme"),
         Binding("r", "refresh_now", "Refresh"),
         Binding("q", "quit", "Quit"),
     ]
@@ -110,6 +119,7 @@ class HerdrDiffApp(App):
         self._wrap = False
         self._follow = True
         self._suppress_highlighted = 0
+        self._theme_index = 0
         self._watcher: Optional[DirWatcher] = None
         self._subscriber: Optional[AgentStatusSubscriber] = None
         self._ended = False
@@ -125,6 +135,7 @@ class HerdrDiffApp(App):
     def on_mount(self) -> None:
         self.query_one("#banner", BannerPane).display = False
         self._update_follow_label()
+        self._update_theme_label()
         self._reload()
         self._watcher = DirWatcher(self._target_path, self._on_fs_change)
         self._watcher.start()
@@ -231,15 +242,16 @@ class HerdrDiffApp(App):
         header = self.query_one("#header", HeaderBar)
         if self._snapshot is None:
             return
+        theme = DARK_THEMES[self._theme_index]
         if self._cumulative:
             text = git_watch.cumulative_diff(self._snapshot.root)
-            diff_pane.show_diff(text, hint_filename=None, wrap=self._wrap)
+            diff_pane.show_diff(text, hint_filename=None, wrap=self._wrap, theme=theme)
         elif self._snapshot.files:
             f = self._snapshot.files[self._selected_index]
             text = git_watch.diff_for_file(self._snapshot.root, f)
-            diff_pane.show_diff(text, hint_filename=f.path, wrap=self._wrap)
+            diff_pane.show_diff(text, hint_filename=f.path, wrap=self._wrap, theme=theme)
         else:
-            diff_pane.show_diff("", hint_filename=None, wrap=self._wrap)
+            diff_pane.show_diff("", hint_filename=None, wrap=self._wrap, theme=theme)
         header.wrap_label = "wrap: on" if self._wrap else "wrap: off"
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
@@ -352,6 +364,15 @@ class HerdrDiffApp(App):
     def _update_follow_label(self) -> None:
         header = self.query_one("#header", HeaderBar)
         header.follow_label = "follow: on" if self._follow else "follow: off"
+
+    def action_cycle_theme(self) -> None:
+        self._theme_index = (self._theme_index + 1) % len(DARK_THEMES)
+        self._update_theme_label()
+        self._render_diff()
+
+    def _update_theme_label(self) -> None:
+        header = self.query_one("#header", HeaderBar)
+        header.theme_label = f"theme: {DARK_THEMES[self._theme_index]}"
 
     def action_refresh_now(self) -> None:
         self._reload()
