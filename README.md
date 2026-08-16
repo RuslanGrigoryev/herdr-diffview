@@ -72,6 +72,8 @@ herdr-diffview --path ~/repo   # watch an explicit directory, skip Herdr lookup
 | `n` / `N` | jump to next / previous hunk in the current diff |
 | `/`       | open a search box; type and press Enter to jump to the next matching line, Enter again for the next match, Esc to close |
 | `+` / `-` | grow / shrink the file list/tree panel (15–70%)  |
+| `]` / `[` | more / less context around each change (default 3 lines, up to 50) |
+| `w`       | toggle showing the whole enclosing function as context (git's `-W`), instead of a fixed line count |
 | `PageUp`/`PageDown`/`Home`/`End`, mouse wheel | scroll the diff pane |
 | `r`       | force refresh                                   |
 | `q`       | quit                                            |

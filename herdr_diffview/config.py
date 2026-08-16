@@ -21,6 +21,8 @@ DEFAULT_VIEW_MODE = "list"
 DEFAULT_FILE_PANEL_HEIGHT = 30  # percent
 MIN_FILE_PANEL_HEIGHT = 15
 MAX_FILE_PANEL_HEIGHT = 70
+DEFAULT_CONTEXT_LINES = 3
+DEFAULT_FULL_FUNCTION = False
 
 
 def config_path() -> Path:
@@ -35,6 +37,8 @@ class Config:
     follow: bool = DEFAULT_FOLLOW
     view_mode: str = DEFAULT_VIEW_MODE
     file_panel_height: int = DEFAULT_FILE_PANEL_HEIGHT
+    context_lines: int = DEFAULT_CONTEXT_LINES
+    full_function: bool = DEFAULT_FULL_FUNCTION
 
     @classmethod
     def load(cls, num_themes: int) -> "Config":
@@ -63,11 +67,24 @@ class Config:
             height = DEFAULT_FILE_PANEL_HEIGHT
         height = max(MIN_FILE_PANEL_HEIGHT, min(MAX_FILE_PANEL_HEIGHT, height))
 
+        # Bounds mirror git_watch.MIN/MAX_CONTEXT_LINES; not imported here to
+        # keep config.py free of a git_watch dependency.
+        context_lines = raw.get("context_lines", DEFAULT_CONTEXT_LINES)
+        if not isinstance(context_lines, int):
+            context_lines = DEFAULT_CONTEXT_LINES
+        context_lines = max(3, min(50, context_lines))
+
+        full_function = raw.get("full_function", DEFAULT_FULL_FUNCTION)
+        if not isinstance(full_function, bool):
+            full_function = DEFAULT_FULL_FUNCTION
+
         return cls(
             theme_index=theme_index,
             follow=follow,
             view_mode=view_mode,
             file_panel_height=height,
+            context_lines=context_lines,
+            full_function=full_function,
         )
 
     def save(self) -> None:

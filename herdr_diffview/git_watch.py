@@ -31,6 +31,26 @@ def _looks_binary(sample: bytes) -> bool:
     return b"\x00" in sample
 
 
+# Default git shows 3 lines of context around each hunk — often not enough
+# to see the enclosing function signature for a change buried deep inside
+# it. Callers can step this up/down, or ask for the whole enclosing function
+# instead (git's -W).
+DEFAULT_CONTEXT_LINES = 3
+MIN_CONTEXT_LINES = 3
+MAX_CONTEXT_LINES = 50
+CONTEXT_STEP = 5
+
+
+def context_flags(context_lines: int, full_function: bool) -> list[str]:
+    """git diff flags for the requested context amount. full_function (git's
+    -W/--function-context) wins over a numeric context_lines when both are
+    set, matching how the app's UI treats them as one toggle plus a
+    fallback step count."""
+    if full_function:
+        return ["-W"]
+    return [f"-U{context_lines}"]
+
+
 @dataclass
 class FileChange:
     path: str
@@ -182,7 +202,12 @@ def skip_reason(root: Path, change: FileChange) -> Optional[str]:
     return None
 
 
-def diff_for_file(root: Path, change: FileChange) -> str:
+def diff_for_file(
+    root: Path,
+    change: FileChange,
+    context_lines: int = DEFAULT_CONTEXT_LINES,
+    full_function: bool = False,
+) -> str:
     """Unified diff text for one file, handling untracked files specially
     (git diff shows nothing for them by default)."""
     reason = skip_reason(root, change)
@@ -200,16 +225,17 @@ def diff_for_file(root: Path, change: FileChange) -> str:
             f"@@ -0,0 +1,{len(lines)} @@\n"
         )
         return header + body + ("\n" if body else "")
+    flags = context_flags(context_lines, full_function)
     try:
-        out = _run(["diff", "HEAD", "--", change.path], cwd=root)
+        out = _run(["diff", *flags, "HEAD", "--", change.path], cwd=root)
         if out.strip():
             return out
         # Fall back to diffing the index (covers newly-added-but-uncommitted
         # files where `diff HEAD` already works, and staged-only changes).
-        out = _run(["diff", "--cached", "--", change.path], cwd=root)
+        out = _run(["diff", *flags, "--cached", "--", change.path], cwd=root)
         if out.strip():
             return out
-        out = _run(["diff", "--", change.path], cwd=root)
+        out = _run(["diff", *flags, "--", change.path], cwd=root)
         return out
     except NotAGitRepo as exc:
         return f"(diff failed for {change.path}: {exc})"
@@ -303,7 +329,13 @@ def _merge_base(root: Path, base_ref: str) -> Optional[str]:
         return None
 
 
-def branch_diff_for_file(root: Path, base_ref: str, change: FileChange) -> str:
+def branch_diff_for_file(
+    root: Path,
+    base_ref: str,
+    change: FileChange,
+    context_lines: int = DEFAULT_CONTEXT_LINES,
+    full_function: bool = False,
+) -> str:
     """Diff for one file across the whole branch vs base_ref: every commit
     since diverging, PLUS any uncommitted change on top, as one clean diff.
 
@@ -318,17 +350,23 @@ def branch_diff_for_file(root: Path, base_ref: str, change: FileChange) -> str:
     if reason is not None:
         return f"({reason})"
     if change.status == "??":
-        return diff_for_file(root, change)
+        return diff_for_file(root, change, context_lines, full_function)
     base_commit = _merge_base(root, base_ref)
     if base_commit is None:
         return f"(could not find a merge base with {base_ref})"
+    flags = context_flags(context_lines, full_function)
     try:
-        return _run(["diff", base_commit, "--", change.path], cwd=root)
+        return _run(["diff", *flags, base_commit, "--", change.path], cwd=root)
     except NotAGitRepo as exc:
         return f"(diff failed for {change.path}: {exc})"
 
 
-def branch_diff(root: Path, base_ref: str) -> str:
+def branch_diff(
+    root: Path,
+    base_ref: str,
+    context_lines: int = DEFAULT_CONTEXT_LINES,
+    full_function: bool = False,
+) -> str:
     """Whole-branch cumulative diff: every commit on HEAD since it diverged
     from base_ref PLUS any uncommitted changes on top, i.e. what a PR
     against base_ref would show right now, as one combined text (used by
@@ -344,15 +382,16 @@ def branch_diff(root: Path, base_ref: str) -> str:
     base_commit = _merge_base(root, base_ref)
     if base_commit is None:
         return f"(could not find a merge base with {base_ref})"
+    flags = context_flags(context_lines, full_function)
     try:
-        merge_base_diff = _run(["diff", base_commit], cwd=root)
+        merge_base_diff = _run(["diff", *flags, base_commit], cwd=root)
     except NotAGitRepo as exc:
         return f"(could not diff against {base_ref}: {exc})"
     parts = [merge_base_diff] if merge_base_diff.strip() else []
     snap = snapshot(root)
     for f in snap.files:
         if f.status == "??":
-            parts.append(diff_for_file(root, f))
+            parts.append(diff_for_file(root, f, context_lines, full_function))
     combined = "\n".join(p for p in parts if p.strip())
     if len(combined) > MAX_DIFF_BYTES:
         combined = (
@@ -363,19 +402,24 @@ def branch_diff(root: Path, base_ref: str) -> str:
     return combined
 
 
-def cumulative_diff(root: Path) -> str:
+def cumulative_diff(
+    root: Path,
+    context_lines: int = DEFAULT_CONTEXT_LINES,
+    full_function: bool = False,
+) -> str:
     # Tracked binary files are already summarized by git itself ("Binary
     # files a/x and b/x differ") inside `git diff HEAD`, so only untracked
     # files need our own skip_reason() guard here.
+    flags = context_flags(context_lines, full_function)
     try:
-        head_diff = _run(["diff", "HEAD"], cwd=root)
+        head_diff = _run(["diff", *flags, "HEAD"], cwd=root)
     except NotAGitRepo:
         head_diff = ""
     parts = [head_diff] if head_diff.strip() else []
     snap = snapshot(root)
     for f in snap.files:
         if f.status == "??":
-            parts.append(diff_for_file(root, f))
+            parts.append(diff_for_file(root, f, context_lines, full_function))
     combined = "\n".join(p for p in parts if p.strip())
     if len(combined) > MAX_DIFF_BYTES:
         # Safety net for the one case skip_reason() can't cover per-file:
