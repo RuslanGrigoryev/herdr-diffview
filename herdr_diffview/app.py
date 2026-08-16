@@ -268,7 +268,6 @@ class HerdrDiffApp(App):
         Binding("minus", "shrink_file_panel", "Shrink files panel", show=False),
         Binding("right_square_bracket", "more_context", "More context"),
         Binding("left_square_bracket", "less_context", "Less context", show=False),
-        Binding("w", "toggle_full_function", "Whole function"),
         Binding("slash", "open_search", "Search"),
         Binding("escape", "close_search", "Close search", show=False),
         Binding("r", "refresh_now", "Refresh"),
@@ -313,7 +312,6 @@ class HerdrDiffApp(App):
         self._view_mode = self._config.view_mode  # "list" or "tree"
         self._file_panel_height = self._config.file_panel_height
         self._context_lines = self._config.context_lines
-        self._full_function = self._config.full_function
 
     def compose(self) -> ComposeResult:
         yield HeaderBar(id="header")
@@ -507,27 +505,24 @@ class HerdrDiffApp(App):
         theme = DARK_THEMES[self._theme_index]
         files = self._active_files()
         ctx = self._context_lines
-        full_fn = self._full_function
         if self._base_branch_diff and self._base_branch:
             if self._cumulative:
-                text = git_watch.branch_diff(
-                    self._snapshot.root, self._base_branch, ctx, full_fn
-                )
+                text = git_watch.branch_diff(self._snapshot.root, self._base_branch, ctx)
                 diff_pane.show_diff(text, hint_filename=None, theme=theme)
             elif files:
                 f = files[self._selected_index]
                 text = git_watch.branch_diff_for_file(
-                    self._snapshot.root, self._base_branch, f, ctx, full_fn
+                    self._snapshot.root, self._base_branch, f, ctx
                 )
                 diff_pane.show_diff(text, hint_filename=f.path, theme=theme)
             else:
                 diff_pane.show_diff("", hint_filename=None, theme=theme)
         elif self._cumulative:
-            text = git_watch.cumulative_diff(self._snapshot.root, ctx, full_fn)
+            text = git_watch.cumulative_diff(self._snapshot.root, ctx)
             diff_pane.show_diff(text, hint_filename=None, theme=theme)
         elif files:
             f = files[self._selected_index]
-            text = git_watch.diff_for_file(self._snapshot.root, f, ctx, full_fn)
+            text = git_watch.diff_for_file(self._snapshot.root, f, ctx)
             diff_pane.show_diff(text, hint_filename=f.path, theme=theme)
         else:
             diff_pane.show_diff("", hint_filename=None, theme=theme)
@@ -763,11 +758,9 @@ class HerdrDiffApp(App):
         self._config.view_mode = self._view_mode
         self._config.file_panel_height = self._file_panel_height
         self._config.context_lines = self._context_lines
-        self._config.full_function = self._full_function
         self._config.save()
 
     def action_more_context(self) -> None:
-        self._full_function = False
         self._context_lines = min(
             git_watch.MAX_CONTEXT_LINES, self._context_lines + git_watch.CONTEXT_STEP
         )
@@ -776,7 +769,6 @@ class HerdrDiffApp(App):
         self._save_config()
 
     def action_less_context(self) -> None:
-        self._full_function = False
         self._context_lines = max(
             git_watch.MIN_CONTEXT_LINES, self._context_lines - git_watch.CONTEXT_STEP
         )
@@ -784,17 +776,9 @@ class HerdrDiffApp(App):
         self._render_diff()
         self._save_config()
 
-    def action_toggle_full_function(self) -> None:
-        self._full_function = not self._full_function
-        self._update_context_label()
-        self._render_diff()
-        self._save_config()
-
     def _update_context_label(self) -> None:
         header = self.query_one("#header", HeaderBar)
-        if self._full_function:
-            header.context_label = "context: whole function"
-        elif self._context_lines != git_watch.DEFAULT_CONTEXT_LINES:
+        if self._context_lines != git_watch.DEFAULT_CONTEXT_LINES:
             header.context_label = f"context: {self._context_lines}"
         else:
             header.context_label = ""
