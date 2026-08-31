@@ -90,8 +90,12 @@ when this pane isn't open or focused.
 
 The diff pane shows an old/new line-number gutter (like GitHub's side-by-side
 numbers, condensed into unified-diff form) alongside the syntax highlighting.
-Binary files and anything over ~1.5MB are skipped with a one-line summary
-instead of being rendered — no megabytes of binary noise or giant lockfiles
+When a removed line and the added line right after it are similar (a rename,
+a tweaked condition, etc.), the specific words that changed are highlighted
+brighter within the line — the rest stays at the muted +/- tint — so you don't
+have to re-read a whole line to spot a one-word change. Binary files and
+anything over ~1.5MB are skipped with a one-line summary instead of being
+rendered — no megabytes of binary noise or giant lockfiles
 flooding the pane.
 
 ## How it works

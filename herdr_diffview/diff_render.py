@@ -11,6 +11,7 @@ internals, so this stays stable across Rich/Textual versions.
 """
 from __future__ import annotations
 
+import difflib
 import re
 from dataclasses import dataclass, field
 
@@ -24,6 +25,13 @@ from rich.text import Text
 # tint diff lines, easier to read code through on long diffs.
 ADDED_BG = Style(bgcolor="#0f2415")
 REMOVED_BG = Style(bgcolor="#2a1216")
+# Layered on top of ADDED_BG/REMOVED_BG for just the tokens that actually
+# changed within a paired -/+ line (word-level diff, à la Claude Code /
+# GitHub's inline diff) — the rest of the line stays at the muted tint above
+# so the eye jumps straight to what's different instead of re-reading the
+# whole line.
+BRIGHT_ADDED_BG = Style(bgcolor="#1f7a3a", bold=True)
+BRIGHT_REMOVED_BG = Style(bgcolor="#7a2030", bold=True)
 HUNK_STYLE = Style(color="cyan", bold=True)
 FILE_HEADER_STYLE = Style(color="bright_white", bold=True)
 META_STYLE = Style(color="grey50")
@@ -120,6 +128,105 @@ def _highlight_line(code: str, lexer_name: str, theme_name: str) -> Text:
     return text
 
 
+_WORD_TOKEN_RE = re.compile(r"\w+|\s+|[^\w\s]")
+
+
+def _tokenize(line: str) -> list[str]:
+    """Split into words/whitespace-runs/single-punctuation-chars — the same
+    granularity `git diff --word-diff` and GitHub's inline diff use, so a
+    rename like `poolData` -> `pool` highlights as one changed word instead
+    of a scatter of changed characters."""
+    return _WORD_TOKEN_RE.findall(line)
+
+
+def _is_pairable_modification(removed: str, added: str) -> bool:
+    """Heuristic: only pair a -/+ line as 'the same line, modified' (worth a
+    word diff) when they're similar enough that highlighting the difference
+    is informative rather than noise — two unrelated lines that happen to
+    sit next to each other would just get a useless all-bright overlay.
+    """
+    if not removed or not added:
+        return False
+    ratio = difflib.SequenceMatcher(None, removed, added, autojunk=False).ratio()
+    return ratio >= 0.35
+
+
+def _word_diff_spans(
+    removed: str, added: str
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    """Character-offset spans (into `removed` and `added` respectively) of
+    the tokens that differ between the two lines, via SequenceMatcher over
+    word-granularity tokens. Returns (removed_spans, added_spans)."""
+    removed_tokens = _tokenize(removed)
+    added_tokens = _tokenize(added)
+    matcher = difflib.SequenceMatcher(None, removed_tokens, added_tokens, autojunk=False)
+
+    def _token_offsets(tokens: list[str]) -> list[int]:
+        offsets = [0]
+        for t in tokens:
+            offsets.append(offsets[-1] + len(t))
+        return offsets
+
+    removed_offsets = _token_offsets(removed_tokens)
+    added_offsets = _token_offsets(added_tokens)
+    removed_spans: list[tuple[int, int]] = []
+    added_spans: list[tuple[int, int]] = []
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if i2 > i1:
+            removed_spans.append((removed_offsets[i1], removed_offsets[i2]))
+        if j2 > j1:
+            added_spans.append((added_offsets[j1], added_offsets[j2]))
+    return removed_spans, added_spans
+
+
+def _pair_modified_lines(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
+    """Scan raw diff lines for consecutive runs of '-' lines immediately
+    followed by '+' lines (git's standard shape for 'these lines became
+    those lines'), pair them up index-wise, and word-diff each pair.
+
+    Returns {line_index: [(start, end), ...]} of character spans (into that
+    line's content *after* stripping the leading +/-) that changed, for
+    every line that got paired. A run of N removed + M added lines pairs
+    min(N, M) of them; any excess lines are left as plain additions/
+    deletions (no entry), since there's nothing sensible to diff them
+    against.
+    """
+    spans: dict[int, list[tuple[int, int]]] = {}
+    i = 0
+    n = len(lines)
+    while i < n:
+        if not lines[i].startswith("-") or lines[i].startswith("--- "):
+            i += 1
+            continue
+        removed_start = i
+        while i < n and lines[i].startswith("-") and not lines[i].startswith("--- "):
+            i += 1
+        removed_end = i
+        if i >= n or not lines[i].startswith("+") or lines[i].startswith("+++ "):
+            continue
+        added_start = i
+        while i < n and lines[i].startswith("+") and not lines[i].startswith("+++ "):
+            i += 1
+        added_end = i
+
+        pair_count = min(removed_end - removed_start, added_end - added_start)
+        for k in range(pair_count):
+            r_idx = removed_start + k
+            a_idx = added_start + k
+            removed_code = lines[r_idx][1:]
+            added_code = lines[a_idx][1:]
+            if not _is_pairable_modification(removed_code, added_code):
+                continue
+            r_spans, a_spans = _word_diff_spans(removed_code, added_code)
+            if r_spans:
+                spans[r_idx] = r_spans
+            if a_spans:
+                spans[a_idx] = a_spans
+    return spans
+
+
 def _gutter_width(diff_text: str) -> int:
     """Widest line number that will appear, so both columns align."""
     widest = 3
@@ -172,6 +279,7 @@ def render_diff(
     lines = diff_text.splitlines()
     width = _gutter_width(diff_text)
     old_no = new_no = 0
+    word_spans = _pair_modified_lines(lines)
 
     def _current_line_no() -> int:
         return out.plain.count("\n")
@@ -211,16 +319,19 @@ def render_diff(
             prefix, code, bg = "+", line[1:], ADDED_BG
             old_str, new_str = "", str(new_no)
             gutter_style = GUTTER_ADDED_STYLE
+            bright_bg = BRIGHT_ADDED_BG
             new_no += 1
         elif line.startswith("-"):
             prefix, code, bg = "-", line[1:], REMOVED_BG
             old_str, new_str = str(old_no), ""
             gutter_style = GUTTER_REMOVED_STYLE
+            bright_bg = BRIGHT_REMOVED_BG
             old_no += 1
         else:
             prefix, code, bg = " ", line[1:] if line else "", None
             old_str, new_str = str(old_no), str(new_no)
             gutter_style = GUTTER_STYLE
+            bright_bg = None
             old_no += 1
             new_no += 1
 
@@ -236,6 +347,11 @@ def render_diff(
             out.append(prefix, style=bg)
         else:
             out.append(prefix)
+        # Word-level highlight spans go on top of the whole-line tint above
+        # (applied after it, so Style.combine's later-wins semantics let the
+        # brighter overlay show through) rather than being swallowed by it.
+        for start, end in word_spans.get(i, ()):
+            code_text.stylize(bright_bg, start, end)
         out.append_text(code_text)
         out.append(newline)
 
