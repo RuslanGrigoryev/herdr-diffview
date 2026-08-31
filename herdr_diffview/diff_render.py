@@ -280,6 +280,20 @@ def render_diff(
     width = _gutter_width(diff_text)
     old_no = new_no = 0
     word_spans = _pair_modified_lines(lines)
+    # A short changed line (e.g. a lone '}') otherwise only tints as far as
+    # its own text, which reads as a background that mysteriously stops mid-
+    # row instead of a filled block. Pad +/- lines with trailing
+    # background-colored spaces out to the widest content line in this
+    # diff, so the tint reaches a consistent right edge.
+    max_code_width = min(
+        max(
+            (len(l) - 1 for l in lines if l[:1] in "+-" and not l.startswith(("+++", "---"))),
+            default=0,
+        ),
+        # Cap so one unusually long line doesn't force every short line to
+        # pad out that far and wrap awkwardly under word-wrap.
+        160,
+    )
 
     def _current_line_no() -> int:
         return out.plain.count("\n")
@@ -341,7 +355,14 @@ def render_diff(
         out.append(GUTTER_SEPARATOR, style=GUTTER_SEPARATOR_STYLE)
         out.append(" ")
 
-        code_text = _highlight_line(code, lexer_name, theme)
+        # Removed lines skip syntax coloring entirely and render plain
+        # white — old code is gone, so its language-token colors would only
+        # compete with the brighter word-diff highlight for attention rather
+        # than helping read it.
+        if line.startswith("-"):
+            code_text = Text(code, style="white")
+        else:
+            code_text = _highlight_line(code, lexer_name, theme)
         if bg is not None:
             code_text.stylize(bg)
             out.append(prefix, style=bg)
@@ -352,6 +373,8 @@ def render_diff(
         # brighter overlay show through) rather than being swallowed by it.
         for start, end in word_spans.get(i, ()):
             code_text.stylize(bright_bg, start, end)
+        if bg is not None and len(code) < max_code_width:
+            code_text.append(" " * (max_code_width - len(code)), style=bg)
         out.append_text(code_text)
         out.append(newline)
 
