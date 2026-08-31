@@ -182,6 +182,8 @@ class DiffContent(Static):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.rendered: Optional[RenderedDiff] = None
+        self._last_args: Optional[tuple] = None
+        self._last_width: Optional[int] = None
 
     def show_diff(
         self,
@@ -189,8 +191,33 @@ class DiffContent(Static):
         hint_filename: str | None = None,
         theme: str = "ansi_dark",
     ) -> None:
-        self.rendered = render_diff(text, hint_filename, wrap=True, theme=theme)
+        self._last_args = (text, hint_filename, theme)
+        self._render_now()
+
+    def _render_now(self) -> None:
+        if self._last_args is None:
+            return
+        text, hint_filename, theme = self._last_args
+        # content_size accounts for our own padding; a width of 0 means the
+        # widget hasn't been laid out yet (e.g. very first render before
+        # the app's first refresh) — fall back to the old auto-wrap path
+        # rather than manually wrapping to a bogus width.
+        content_width = self.content_size.width or None
+        self._last_width = content_width
+        self.rendered = render_diff(
+            text, hint_filename, wrap=True, theme=theme, content_width=content_width
+        )
         self.update(self.rendered.text)
+
+    def on_resize(self, event) -> None:  # noqa: ANN001 - Textual event
+        # Manual per-row background padding is computed against a fixed
+        # width baked in at render time; a terminal resize changes that
+        # width, so without this the padding would drift stale (still
+        # correct for the old width, ragged against the new one) until the
+        # next unrelated re-render happened to fire.
+        new_width = self.content_size.width or None
+        if new_width != self._last_width:
+            self._render_now()
 
 
 class DiffPane(VerticalScroll):

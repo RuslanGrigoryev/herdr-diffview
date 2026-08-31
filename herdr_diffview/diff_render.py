@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 
 from pygments.lexers import get_lexer_by_name, get_lexer_for_filename
 from pygments.util import ClassNotFound
+from rich._wrap import divide_line
 from rich.style import Style
 from rich.syntax import Syntax
 from rich.text import Text
@@ -142,13 +143,19 @@ def _tokenize(line: str) -> list[str]:
 def _is_pairable_modification(removed: str, added: str) -> bool:
     """Heuristic: only pair a -/+ line as 'the same line, modified' (worth a
     word diff) when they're similar enough that highlighting the difference
-    is informative rather than noise — two unrelated lines that happen to
-    sit next to each other would just get a useless all-bright overlay.
+    is informative rather than noise. Two lines from unrelated statements
+    that happen to sit next to each other in a block replacement (e.g. a
+    multi-line ternary collapsed into a one-line expression) would otherwise
+    get a nonsense word-diff — spans landing on coincidentally-shared words
+    like 'const' or 'error' that have nothing to do with each other. 0.6 is
+    deliberately stricter than a 'looks vaguely similar' bar: it's meant to
+    catch true single-line edits (rename, tweak a condition), not pair up
+    lines that are simply next to each other post-restructuring.
     """
     if not removed or not added:
         return False
     ratio = difflib.SequenceMatcher(None, removed, added, autojunk=False).ratio()
-    return ratio >= 0.35
+    return ratio >= 0.6
 
 
 def _word_diff_spans(
@@ -188,10 +195,10 @@ def _pair_modified_lines(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
 
     Returns {line_index: [(start, end), ...]} of character spans (into that
     line's content *after* stripping the leading +/-) that changed, for
-    every line that got paired. A run of N removed + M added lines pairs
-    min(N, M) of them; any excess lines are left as plain additions/
-    deletions (no entry), since there's nothing sensible to diff them
-    against.
+    every line that got paired. Only blocks with an equal number of removed
+    and added lines are paired at all (see the length check below); a block
+    that grows or shrinks is a restructuring, not a line-by-line edit, and
+    is left as plain whole-line +/- instead of a nonsense positional pairing.
     """
     spans: dict[int, list[tuple[int, int]]] = {}
     i = 0
@@ -211,7 +218,18 @@ def _pair_modified_lines(lines: list[str]) -> dict[int, list[tuple[int, int]]]:
             i += 1
         added_end = i
 
-        pair_count = min(removed_end - removed_start, added_end - added_start)
+        removed_count = removed_end - removed_start
+        added_count = added_end - added_start
+        # Only pair line-for-line when the block has the same number of
+        # removed and added lines — the strong signal that each position
+        # corresponds to an edited counterpart. A block that shrinks or
+        # grows (e.g. a multi-line ternary collapsed into one expression)
+        # is a restructuring, not a line-by-line edit; positionally pairing
+        # its lines produces nonsense word-diff spans on coincidentally
+        # shared words. Leave those as plain whole-line +/- instead.
+        if removed_count != added_count:
+            continue
+        pair_count = removed_count
         for k in range(pair_count):
             r_idx = removed_start + k
             a_idx = added_start + k
@@ -249,6 +267,7 @@ def render_diff(
     hint_filename: str | None = None,
     wrap: bool = True,
     theme: str = "ansi_dark",
+    content_width: int | None = None,
 ) -> RenderedDiff:
     """Build a Rich Text with an old/new line-number gutter plus per-line
     syntax + diff coloring, plus hunk-position metadata for navigation.
@@ -365,19 +384,57 @@ def render_diff(
             code_text = _highlight_line(code, lexer_name, theme)
         if bg is not None:
             code_text.stylize(bg)
-            out.append(prefix, style=bg)
-        else:
-            out.append(prefix)
         # Word-level highlight spans go on top of the whole-line tint above
         # (applied after it, so Style.combine's later-wins semantics let the
         # brighter overlay show through) rather than being swallowed by it.
         for start, end in word_spans.get(i, ()):
             code_text.stylize(bright_bg, start, end)
-        if bg is not None and len(code) < max_code_width:
-            code_text.append(" " * (max_code_width - len(code)), style=bg)
-        out.append_text(code_text)
+
+        if content_width is not None:
+            # Manually chunk to a known width and pad *each* visual row —
+            # relying on Rich's automatic word-wrap here would only pad the
+            # last row (padding happens before wrapping occurs at render
+            # time against the pane's actual width, which this function
+            # doesn't otherwise know), leaving every wrapped-but-not-last
+            # row's background stopping short at its text. divide_line() is
+            # the same algorithm Text.wrap() uses internally, called
+            # directly so it needs no Console instance. Applies to context
+            # lines too (bg is None there) so they still wrap instead of
+            # getting cropped once out.no_wrap is set below — they just skip
+            # the padding step since there's no background to extend.
+            row_width = max(1, content_width - prefix_width - 1)
+            offsets = divide_line(code_text.plain, row_width, fold=True)
+            rows = code_text.divide(offsets) if code_text.plain else [Text("")]
+            for row_idx, row in enumerate(rows):
+                if row_idx > 0:
+                    out.append("\n")
+                    out.append(" " * prefix_width)
+                row_prefix = prefix if row_idx == 0 else " "
+                out.append(row_prefix, style=bg if bg is not None else Style())
+                if bg is not None:
+                    row_len = len(row.plain.rstrip("\n"))
+                    if row_len < row_width:
+                        row.append(" " * (row_width - row_len), style=bg)
+                out.append_text(row)
+        else:
+            out.append(prefix, style=bg if bg is not None else Style())
+            if bg is not None and len(code) < max_code_width:
+                code_text.append(" " * (max_code_width - len(code)), style=bg)
+            out.append_text(code_text)
         out.append(newline)
 
-    out.no_wrap = not wrap
-    out.overflow = "fold" if wrap else "ignore"
+    if content_width is not None:
+        # Code lines are already manually wrapped row-by-row above; letting
+        # Textual's own auto-wrap run again on top of those would re-break
+        # them at a different point and misalign the padding. Header/hunk/
+        # meta lines never go through that path, so overflow stays 'fold'
+        # (not 'crop') so a long filename or hunk line still wraps instead
+        # of being cut off — no_wrap only disables *re-wrapping* text that
+        # already contains hard newlines; it doesn't crop naturally long
+        # single-paragraph runs, `Text.overflow` governs that.
+        out.no_wrap = True
+        out.overflow = "fold"
+    else:
+        out.no_wrap = not wrap
+        out.overflow = "fold" if wrap else "ignore"
     return RenderedDiff(text=out, hunk_lines=hunk_lines)
