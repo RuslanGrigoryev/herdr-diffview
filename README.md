@@ -19,12 +19,49 @@ server for it, over the same CLI/socket API Herdr itself uses.
 
 ## Install
 
+### Recommended: pipx (global command, works from any directory)
+
+[pipx](https://pipx.pypa.io) installs the tool into its own isolated
+environment but puts the `herdr-diffview` command itself on your `PATH`, so
+it's callable from any directory in any new pane — no `cd`, no venv
+activation.
+
+```bash
+# one-time, if you don't have pipx yet:
+brew install pipx      # or: python3 -m pip install --user pipx
+pipx ensurepath         # adds pipx's bin dir to PATH; restart your shell after this
+
+git clone https://github.com/RuslanGrigoryev/herdr-diffview.git
+cd herdr-diffview
+pipx install .
+```
+
+Then from anywhere:
+
+```bash
+herdr-diffview
+```
+
+To pick up updates after a `git pull`:
+
+```bash
+cd herdr-diffview && git pull
+pipx install --force .
+```
+
+### Alternative: venv (activate it each session)
+
 ```bash
 git clone https://github.com/RuslanGrigoryev/herdr-diffview.git
 cd herdr-diffview
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
 ```
+
+With this method the `herdr-diffview` command only exists while that venv is
+activated (`source .venv/bin/activate`) in the current shell — a fresh
+terminal/pane needs that command run again before `herdr-diffview` is found.
+pipx avoids this entirely.
 
 ## Use
 
