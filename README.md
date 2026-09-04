@@ -140,7 +140,12 @@ flooding the pane.
 - **Change detection**: a `watchdog` (inotify) observer on the target
   directory triggers a debounced (~150ms) re-read of `git status --porcelain`
   and `git diff` (+ `git diff --cached`, untracked files are diffed against
-  `/dev/null`).
+  `/dev/null`). Working-tree file writes are the common case, but the
+  watcher also reacts to `.git/HEAD`, `.git/index`, and `.git/refs/*`
+  changing — so a plain `git commit`/`checkout`/fast-forward `pull` (which
+  only touches files under `.git/`, none of them tracked working-tree
+  files) still triggers a refresh instead of leaving the pane showing a
+  stale diff until some unrelated file happens to change.
 - **Agent status**: if launched inside Herdr, it subscribes to
   `pane.agent_status_changed` over Herdr's local socket for the target pane,
   so the header badge (`working` / `idle` / `blocked` / `done`) updates the
