@@ -98,6 +98,7 @@ class FileTreePane(Tree):
         self,
         files: list[git_watch.FileChange],
         followed_index: Optional[int] = None,
+        selected_index: Optional[int] = None,
     ) -> None:
         collapsed_dirs = self._collapsed_dir_paths()
         self.clear()
@@ -127,9 +128,15 @@ class FileTreePane(Tree):
             parts = f.path.split("/")
             parent = dir_node_for(tuple(parts[:-1]))
             style = style_map.get(f.status, "white")
+            # Same fix as FilePane: Tree's own highlight-row CSS can't win
+            # against this Text's own explicit style spans, so the selected
+            # node's filename kept its original status color instead of a
+            # readable one against the cursor's accent background.
+            if i == selected_index:
+                style = "bold white on dark_blue"
             if i == followed_index:
                 label = Text("> ", style=Style(bold=True, bgcolor="dark_green"))
-                label.append(f"{f.marker} {parts[-1]}", style=f"bold {style}")
+                label.append(f"{f.marker} {parts[-1]}", style=style)
             else:
                 label = Text(f"  {f.marker} {parts[-1]}", style=style)
             parent.add_leaf(label, data=i)
@@ -475,7 +482,7 @@ class HerdrDiffApp(App):
         # tears down and recreates every row. Skip the rebuild entirely when
         # nothing about what should be *displayed* actually changed; only the
         # selected diff content below needs to refresh every time.
-        signature = tuple((f.path, f.status) for f in files) + (followed_index,)
+        signature = tuple((f.path, f.status) for f in files) + (followed_index, self._selected_index)
         if signature != self._file_list_signature:
             file_list.clear()
             for i, f in enumerate(files):
@@ -486,18 +493,36 @@ class HerdrDiffApp(App):
                     "??": "green",
                     "R": "cyan",
                 }.get(f.status, "white")
+                # ListView's own CSS tries to recolor the cursor/highlighted
+                # row (color: $block-cursor-foreground) for contrast against
+                # its accent-colored background, but that CSS rule can't win
+                # against a Rich Text object's own explicit per-character
+                # style spans (set right here, e.g. "green"/"yellow") — those
+                # are baked into the renderable itself, not inherited from
+                # the widget's computed style, so the row kept its original
+                # status color and could read as invisible against the
+                # highlight bar depending on terminal/theme (the actual bug
+                # reported: filename unreadable on the selected row). Force
+                # an explicit high-contrast override on whichever row is
+                # ListView's current selection, the same way the follow
+                # marker already has to.
+                if i == self._selected_index:
+                    style = "bold white on dark_blue"
                 if i == followed_index:
                     # Bold text alone can be indistinguishable on the row
-                    # that's ALSO the list's cursor highlight (ListView's own
-                    # CSS already recolors that row); an explicit background
-                    # tint on the marker chars themselves stays visible
-                    # regardless.
+                    # that's ALSO the list's cursor highlight; an explicit
+                    # background tint on the marker chars themselves stays
+                    # visible regardless.
                     label = Text("> ", style=Style(bold=True, bgcolor="dark_green"))
-                    label.append(f"{f.marker} {f.path}", style=f"bold {style}")
+                    label.append(f"{f.marker} {f.path}", style=style)
                 else:
                     label = Text(f"  {f.marker} {f.path}", style=style)
                 file_list.append(ListItem(Static(label)))
-            tree.rebuild(files, followed_index=followed_index)
+            tree.rebuild(
+                files,
+                followed_index=followed_index,
+                selected_index=self._selected_index,
+            )
             self._file_list_signature = signature
 
         self._expected_index = self._selected_index
