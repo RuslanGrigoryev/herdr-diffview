@@ -401,7 +401,7 @@ class HerdrDiffApp(App):
         header = self.query_one("#header", HeaderBar)
         header.repo_label = snap.root.name
         header.branch_label = snap.branch
-        stat = git_watch.diffstat_from_text(git_watch.cumulative_diff(snap.root))
+        stat = self._current_diffstat(snap.root)
         header.stat_label = stat.render()
         self._push_diff_metadata(stat)
         self._render_file_list(changed_paths)
@@ -749,13 +749,30 @@ class HerdrDiffApp(App):
         self._update_diff_mode_label()
         self._resync_selection_and_render()
 
+    def _current_diffstat(self, root: Path) -> git_watch.DiffStat:
+        """Diffstat matching whichever diff the pane is actually showing:
+        cumulative_diff() (vs HEAD) normally, but branch_diff() (vs the base
+        branch's merge-base) in 'vs branch' mode — otherwise switching modes
+        with 'b' changed the diff content below without ever updating the
+        +/-/files-changed count in the header, which then silently kept
+        describing the wrong comparison."""
+        if self._base_branch_diff and self._base_branch:
+            return git_watch.diffstat_from_text(git_watch.branch_diff(root, self._base_branch))
+        return git_watch.diffstat_from_text(git_watch.cumulative_diff(root))
+
     def _resync_selection_and_render(self) -> None:
         """Switching between working-tree and branch file lists changes what
         _active_files() returns entirely, so re-clamp the selection and
         rebuild both file views before re-rendering the diff — otherwise the
-        old index could point at an unrelated file in the new list."""
+        old index could point at an unrelated file in the new list. Also
+        recomputes the header stat immediately (rather than waiting for the
+        next fs event) since toggling 'b' changes which diff it should
+        describe."""
         files = self._active_files()
         self._selected_index = min(self._selected_index, max(0, len(files) - 1))
+        if self._snapshot:
+            header = self.query_one("#header", HeaderBar)
+            header.stat_label = self._current_diffstat(self._snapshot.root).render()
         self._render_file_list()
         self._render_diff()
 
