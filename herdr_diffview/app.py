@@ -440,6 +440,39 @@ class HerdrDiffApp(App):
             return self._branch_files
         return self._snapshot.files if self._snapshot else []
 
+    @staticmethod
+    def _file_label(f: git_watch.FileChange, is_selected: bool, is_followed: bool) -> Text:
+        """Build one file row's label, always used (both for the full
+        rebuild and for restyling a single row in place) so the selection/
+        follow styling logic can never drift between the two call sites."""
+        style = {
+            "M": "yellow",
+            "A": "green",
+            "D": "red",
+            "??": "green",
+            "R": "cyan",
+        }.get(f.status, "white")
+        # ListView/Tree's own CSS tries to recolor the cursor/highlighted row
+        # (color: $block-cursor-foreground) for contrast against its accent
+        # background, but that rule can't win against this Text's own
+        # explicit per-character style spans ("green"/"yellow"/etc., set
+        # right here) — those are baked into the renderable itself, not
+        # inherited from the widget's computed style, so the selected row
+        # kept its original status color and could read as invisible
+        # against the highlight bar. Force an explicit high-contrast
+        # override on whichever row is the current selection.
+        if is_selected:
+            style = "bold white on dark_blue"
+        if is_followed:
+            # Bold text alone can be indistinguishable on the row that's
+            # ALSO the list's cursor highlight; an explicit background tint
+            # on the marker chars themselves stays visible regardless.
+            label = Text("> ", style=Style(bold=True, bgcolor="dark_green"))
+            label.append(f"{f.marker} {f.path}", style=style)
+        else:
+            label = Text(f"  {f.marker} {f.path}", style=style)
+        return label
+
     def _render_file_list(self, changed_paths: Optional[set[Path]] = None) -> None:
         file_list = self.query_one("#files", FilePane)
         tree = self.query_one("#file-tree", FileTreePane)
@@ -486,37 +519,9 @@ class HerdrDiffApp(App):
         if signature != self._file_list_signature:
             file_list.clear()
             for i, f in enumerate(files):
-                style = {
-                    "M": "yellow",
-                    "A": "green",
-                    "D": "red",
-                    "??": "green",
-                    "R": "cyan",
-                }.get(f.status, "white")
-                # ListView's own CSS tries to recolor the cursor/highlighted
-                # row (color: $block-cursor-foreground) for contrast against
-                # its accent-colored background, but that CSS rule can't win
-                # against a Rich Text object's own explicit per-character
-                # style spans (set right here, e.g. "green"/"yellow") — those
-                # are baked into the renderable itself, not inherited from
-                # the widget's computed style, so the row kept its original
-                # status color and could read as invisible against the
-                # highlight bar depending on terminal/theme (the actual bug
-                # reported: filename unreadable on the selected row). Force
-                # an explicit high-contrast override on whichever row is
-                # ListView's current selection, the same way the follow
-                # marker already has to.
-                if i == self._selected_index:
-                    style = "bold white on dark_blue"
-                if i == followed_index:
-                    # Bold text alone can be indistinguishable on the row
-                    # that's ALSO the list's cursor highlight; an explicit
-                    # background tint on the marker chars themselves stays
-                    # visible regardless.
-                    label = Text("> ", style=Style(bold=True, bgcolor="dark_green"))
-                    label.append(f"{f.marker} {f.path}", style=style)
-                else:
-                    label = Text(f"  {f.marker} {f.path}", style=style)
+                label = self._file_label(
+                    f, is_selected=(i == self._selected_index), is_followed=(i == followed_index)
+                )
                 file_list.append(ListItem(Static(label)))
             tree.rebuild(
                 files,
@@ -528,6 +533,30 @@ class HerdrDiffApp(App):
         self._expected_index = self._selected_index
         file_list.index = self._selected_index
         tree.select_index(self._selected_index)
+
+    def _restyle_row(self, index: int, files: list[git_watch.FileChange], followed_index: Optional[int]) -> None:
+        """Rewrite a single row's label in place — used by plain arrow-key/
+        click navigation so the selection-highlight override moves with the
+        cursor without the flicker of a full file_list.clear()+rebuild on
+        every keypress."""
+        if index < 0 or index >= len(files):
+            return
+        f = files[index]
+        label = self._file_label(
+            f, is_selected=(index == self._selected_index), is_followed=(index == followed_index)
+        )
+        if self._view_mode == "list":
+            file_list = self.query_one("#files", FilePane)
+            try:
+                item = file_list.children[index]
+            except IndexError:
+                return
+            item.query_one(Static).update(label)
+        else:
+            tree = self.query_one("#file-tree", FileTreePane)
+            node = tree._node_for_index(index)
+            if node is not None:
+                node.set_label(label)
 
     def _match_changed_file(self, changed_paths: set[Path]) -> Optional[int]:
         """Map fs-watcher paths to an index in the current file list.
@@ -601,6 +630,7 @@ class HerdrDiffApp(App):
         self._select_from_view(index)
 
     def _select_from_view(self, index: int) -> None:
+        previous_index = self._selected_index
         self._selected_index = index
         if index == self._expected_index:
             # Matches what we ourselves last set — not a user click. (A
@@ -614,6 +644,26 @@ class HerdrDiffApp(App):
             # to the user until they re-enable follow with 'f'.
             self._follow = False
             self._update_follow_label()
+        # The selection-highlight override (which row gets the readable
+        # white-on-blue style) has to move with the cursor on every plain
+        # arrow-key/click navigation too, not just on a full fs-triggered
+        # reload — otherwise it stays frozen on whatever row got it at the
+        # last full rebuild (the reported bug: only the very first file ever
+        # showed readable selected-row text). Restyling just the old and new
+        # rows in place avoids the flicker a full list_view.clear()+rebuild
+        # on every keypress would cause.
+        if previous_index != self._selected_index:
+            files = self._active_files()
+            followed_index = self._selected_index if self._follow else None
+            self._restyle_row(previous_index, files, followed_index)
+            self._restyle_row(self._selected_index, files, followed_index)
+            # Keep the signature in sync with what we just did in place, so
+            # the next fs-triggered _render_file_list() call (which compares
+            # against this signature) doesn't think a full rebuild is needed
+            # purely because the selection moved — that's already reflected
+            # on screen now.
+            signature = tuple((f.path, f.status) for f in files) + (followed_index, self._selected_index)
+            self._file_list_signature = signature
         if not self._cumulative:
             self._render_diff()
 
