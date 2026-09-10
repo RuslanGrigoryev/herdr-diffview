@@ -367,7 +367,17 @@ class HerdrDiffApp(App):
         self._update_context_label()
         self._update_view_mode_visibility()
         self._reload()
-        self._watcher = DirWatcher(self._target_path, self._on_fs_change)
+        # Extra git metadata dirs to watch alongside the working tree, so a
+        # commit/checkout in a `git worktree` checkout is still detected —
+        # its HEAD/index/refs live outside the worktree's own directory
+        # tree entirely (see fswatch.py's module docstring).
+        try:
+            extra_git_dirs = git_watch.git_dirs(self._target_path)
+        except git_watch.NotAGitRepo:
+            extra_git_dirs = []
+        self._watcher = DirWatcher(
+            self._target_path, self._on_fs_change, extra_git_dirs=extra_git_dirs
+        )
         self._watcher.start()
         if self._pane_id and herdr_client.in_herdr_pane():
             self._subscriber = AgentStatusSubscriber(

@@ -138,6 +138,41 @@ def repo_root(path: Path) -> Path:
     return Path(out.strip())
 
 
+def git_dirs(root: Path) -> list[Path]:
+    """The git metadata directories that matter for detecting "the current
+    commit moved" — usually just one (`.git`), but in a `git worktree`
+    checkout these are two entirely different directories:
+
+    - `--git-dir`: this worktree's *private* dir (HEAD, index, ORIG_HEAD)
+      — inside `<main-repo>/.git/worktrees/<name>/`, nowhere near the
+      worktree's own working-tree path our fs watcher is rooted at.
+    - `--git-common-dir`: the shared repo dir (refs/, packed-refs,
+      objects/) all worktrees of the same repo point at together.
+
+    In a plain (non-worktree) checkout both commands return the same `.git`
+    dir, so this is a no-op there — the caller always gets a de-duplicated
+    list of directories that actually need watching for ref changes,
+    whether or not worktrees are involved.
+    """
+    dirs: list[Path] = []
+    for flag in ("--absolute-git-dir", "--git-dir", "--git-common-dir"):
+        try:
+            out = _run(["rev-parse", flag], cwd=root).strip()
+        except NotAGitRepo:
+            continue
+        if not out:
+            continue
+        p = Path(out)
+        if not p.is_absolute():
+            # --git-dir/--git-common-dir can return a path relative to cwd
+            # (e.g. plain '.git') on older git versions that don't support
+            # --absolute-git-dir; resolve it against root ourselves.
+            p = (root / p).resolve()
+        if p not in dirs:
+            dirs.append(p)
+    return dirs
+
+
 def current_branch(root: Path) -> str:
     try:
         out = _run(["symbolic-ref", "--short", "-q", "HEAD"], cwd=root)
