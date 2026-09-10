@@ -80,12 +80,17 @@ pipx avoids this entirely.
    ```
 
    No arguments needed. It reads `HERDR_ENV` / `HERDR_WORKSPACE_ID` /
-   `HERDR_PANE_ID` from its own environment (Herdr injects these into every
-   pane it manages), asks Herdr for the other panes in the same workspace via
-   `herdr pane list --json`, and picks the most recently active pane that has
-   an `agent_status` — i.e. the one running your agent. If you're watching a
-   plain terminal (no detected agent), pass `--pane <id>` or `--path <dir>`
-   explicitly.
+   `HERDR_TAB_ID` / `HERDR_PANE_ID` from its own environment (Herdr injects
+   these into every pane it manages), asks Herdr for the other panes in the
+   same workspace via `herdr pane list --json`, and prefers whichever
+   agent-running pane shares its **tab** (i.e. the pane it's actually split
+   next to) — falling back to the focused pane, then the most recently
+   active one workspace-wide, only if no agent pane shares its tab. This
+   matters when you have two agents running at once against the same repo
+   (e.g. one in the main checkout, another in a `git worktree` off it, each
+   in its own tab) — without the same-tab preference it can pick the wrong
+   one. If you're watching a plain terminal (no detected agent), pass
+   `--pane <id>` or `--path <dir>` explicitly.
 
 ### Options
 

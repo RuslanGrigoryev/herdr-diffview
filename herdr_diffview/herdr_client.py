@@ -141,6 +141,10 @@ def current_pane_id() -> Optional[str]:
     return os.environ.get("HERDR_PANE_ID")
 
 
+def current_tab_id() -> Optional[str]:
+    return os.environ.get("HERDR_TAB_ID")
+
+
 def report_metadata(
     pane_id: str,
     source: str,
@@ -175,9 +179,19 @@ def find_agent_pane(workspace_id: Optional[str] = None) -> Optional[PaneInfo]:
     """Best-effort pick of "the agent pane to watch" in the current workspace.
 
     Strategy: list panes in the workspace, keep ones that (a) aren't us and
-    (b) have a detected agent_status, then prefer the focused one, falling
-    back to the highest `revision` (Herdr's own recency counter) as a proxy
-    for "most recently active".
+    (b) have a detected agent_status. When two+ agent panes exist at once
+    (e.g. one agent working in the repo's main checkout and another in a
+    `git worktree` off the same repo, each in its own tab), a workspace-wide
+    'most recently active' fallback can grab the wrong one — reliably
+    wrong for worktrees specifically, since the diffview pane is always
+    split as a sibling of the one agent it's meant to watch, so "same tab
+    as me" is a strictly better signal than "most recently touched
+    anywhere in the workspace". Preference order:
+      1. An agent pane sharing this pane's tab_id (the actual split it was
+         launched next to).
+      2. The focused agent pane, if any.
+      3. The highest `revision` (Herdr's own recency counter) as a last
+         resort, matching the old behavior.
     """
     ws = workspace_id or current_workspace_id()
     me = current_pane_id()
@@ -185,6 +199,19 @@ def find_agent_pane(workspace_id: Optional[str] = None) -> Optional[PaneInfo]:
     candidates = [p for p in panes if p.has_agent and p.pane_id != me]
     if not candidates:
         return None
+
+    # HERDR_TAB_ID is injected directly into our own process env by Herdr,
+    # so this needs no lookup of "me" in the pane list (which could in
+    # principle come up empty on some Herdr version/edge case).
+    my_tab_id = current_tab_id()
+    if my_tab_id:
+        same_tab = [p for p in candidates if p.tab_id == my_tab_id]
+        if same_tab:
+            focused_in_tab = [p for p in same_tab if p.focused]
+            if focused_in_tab:
+                return focused_in_tab[0]
+            return max(same_tab, key=lambda p: p.revision)
+
     focused = [p for p in candidates if p.focused]
     if focused:
         return focused[0]
