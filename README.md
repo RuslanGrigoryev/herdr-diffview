@@ -1,10 +1,33 @@
-# herdr-diffview
+<p align="center">
+  <img src="assets/logo.png" alt="herdr-diffview logo" width="140">
+</p>
 
-A live diff viewer for [Herdr](https://herdr.dev) — run it in a pane next to a
-coding agent (Claude Code, Codex, ...) and watch the working tree change in
-real time: a file tree with dirty markers on the left, a syntax-highlighted
-unified diff on the right, and the agent's live Herdr status (`working` /
-`idle` / `blocked`) in the header.
+<h1 align="center">herdr-diffview</h1>
+
+<p align="center">
+  A live git-diff viewer for <a href="https://herdr.dev">Herdr</a> — run it in a pane next to a coding agent and watch the working tree change in real time.
+</p>
+
+<p align="center">
+  <a href="https://github.com/RuslanGrigoryev/herdr-diffview/blob/main/LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue.svg"></a>
+  <img alt="Python 3.10+" src="https://img.shields.io/badge/python-3.10%2B-blue">
+  <img alt="Built with Textual" src="https://img.shields.io/badge/UI-Textual-5A4FCF">
+  <a href="https://herdr-diffview.vercel.app"><img alt="Project site" src="https://img.shields.io/badge/site-herdr--diffview.vercel.app-informational"></a>
+</p>
+
+---
+
+Split a pane next to your agent (Claude Code, Codex, …) and get a
+syntax-highlighted, word-level diff of its working tree that updates itself —
+no re-running a command, no switching windows to check `git diff`.
+
+- 📁 **File tree with dirty markers** — flat list or nested directory view
+- 🎯 **Follows the agent** — auto-jumps to whichever file it just touched
+- 🎨 **Real syntax highlighting** — Pygments per-language lexing, 14 dark themes
+- 🔍 **Word-level diff** — the exact tokens that changed are highlighted within a line, not just the whole line
+- 🌿 **Branch mode** — diff against `main`/`master`/`origin/HEAD` instead of just the working tree (a PR preview, right in the terminal)
+- 🩺 **Live agent status** — `working` / `idle` / `blocked` / `done`, read straight from Herdr
+- 🌲 **Worktree-aware** — correctly tracks `git worktree` checkouts and picks the right agent pane when several run at once
 
 It does **not** guess anything about agent state — it asks the running Herdr
 server for it, over the same CLI/socket API Herdr itself uses.
@@ -49,7 +72,8 @@ cd herdr-diffview && git pull
 pipx install --force .
 ```
 
-### Alternative: venv (activate it each session)
+<details>
+<summary>Alternative: venv (activate it each session)</summary>
 
 ```bash
 git clone https://github.com/RuslanGrigoryev/herdr-diffview.git
@@ -62,6 +86,8 @@ With this method the `herdr-diffview` command only exists while that venv is
 activated (`source .venv/bin/activate`) in the current shell — a fresh
 terminal/pane needs that command run again before `herdr-diffview` is found.
 pipx avoids this entirely.
+
+</details>
 
 ## Use
 
@@ -137,8 +163,7 @@ a tweaked condition, etc.), the specific words that changed are highlighted
 brighter within the line — the rest stays at the muted +/- tint — so you don't
 have to re-read a whole line to spot a one-word change. Binary files and
 anything over ~1.5MB are skipped with a one-line summary instead of being
-rendered — no megabytes of binary noise or giant lockfiles
-flooding the pane.
+rendered — no megabytes of binary noise or giant lockfiles flooding the pane.
 
 ## How it works
 
@@ -146,17 +171,17 @@ flooding the pane.
   directory triggers a debounced (~150ms) re-read of `git status --porcelain`
   and `git diff` (+ `git diff --cached`, untracked files are diffed against
   `/dev/null`). Working-tree file writes are the common case, but the
-  watcher also reacts to `.git/HEAD`, `.git/index`, and `.git/refs/*`
-  changing — so a plain `git commit`/`checkout`/fast-forward `pull` (which
-  only touches files under `.git/`, none of them tracked working-tree
-  files) still triggers a refresh instead of leaving the pane showing a
-  stale diff until some unrelated file happens to change.
+  watcher also reacts to the git metadata that actually changes on a plain
+  `commit`/`checkout`/fast-forward `pull` — `HEAD`, `index`, `refs/*` — in
+  both a plain checkout and a `git worktree` (whose private HEAD/index and
+  shared refs live in two different directories), so the pane refreshes
+  even when no working-tree file changed alongside it.
 - **Agent status**: if launched inside Herdr, it subscribes to
   `pane.agent_status_changed` over Herdr's local socket for the target pane,
   so the header badge (`working` / `idle` / `blocked` / `done`) updates the
   instant Herdr's own detection changes — no polling.
 - **UI**: [Textual](https://textual.textualize.io/), diff highlighting via
-  `rich`'s built-in `Syntax`/diff lexer.
+  Pygments lexing + Rich's styling primitives.
 
 If the watched pane closes or its directory disappears, the UI shows a clear
 "watching ended" banner instead of crashing.
@@ -166,3 +191,7 @@ If the watched pane closes or its directory disappears, the UI shows a clear
 - Multiple simultaneous agent panes / a session switcher (deliberately out of
   scope for v1 — see the project issues if you want this).
 - Windows (Herdr itself is beta there; this tool is untested).
+
+## License
+
+MIT
